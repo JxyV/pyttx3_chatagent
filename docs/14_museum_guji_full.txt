@@ -1,0 +1,255 @@
+﻿---
+title: "湖北省博物馆·古籍书影（国家/湖北珍贵古籍名录·汇编）"
+institution: "湖北省博物馆"
+location: "中国·湖北·武汉"
+compiler: "自建语料库"
+doc_type: "rare_books_catalog"
+lang: "zh"
+version: "1.0"
+date: "2025-09-20"          # 本次整理日期
+accessed_at: "2025-09-20"   # 访问馆方页面日期
+
+source_type: "webpage/compiled"
+source_url: "https://hbsbwg.cjyun.org/qtq/index.html"
+content_origin: "用户提供书目条目信息（以馆方/名录为准）"
+license: "仅限学习研究使用"
+
+topics: ["古籍","宋元明清刻本","国家珍贵古籍名录","湖北省珍贵古籍名录","书影"]
+coverage:
+  - "国家珍贵古籍名录（部分）"
+  - "湖北省珍贵古籍名录（部分）"
+normalization:
+  - "年代统一以纪年+朝代；刻印信息原样保留（例：明嘉靖刻本）"
+  - "字段含作者/编者/批选/跋题信息；必要处合并于注记"
+item_schema:
+  - id              # 稳定ID（示例：rb-n-0001 / rb-h-0001）
+  - catalog         # 名录类别：国家/湖北省
+  - title           # 书名与卷数
+  - authors         # 责任者（作者/辑者/批选/撰）
+  - dynasty         # 主要成书/作者所属朝代
+  - edition         # 版本类型（刻本/抄本/朱墨套印等）
+  - imprint         # 刻印信息（刻工/书坊/堂号等）
+  - year            # 刻印/抄写年份（公元或干支纪年）
+  - remarks         # 跋、题记、其他说明
+  - provenance      # 藏所/来源（若已知）
+  - source_url      # 该书对应的详情页URL（若有）
+
+items:
+  # —— 国家珍贵古籍名录（部分） ——
+  - id: rb-n-0001
+    catalog: "国家"
+    title: "范忠宣公文集 二十卷"
+    authors: ["（宋）范纯仁 撰"]
+    dynasty: "宋（作者）/明（刻）"
+    edition: "明嘉靖刻本"
+    imprint: "范惟元等刻"
+    year: null
+    remarks: "柯逢时跋。"
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0002
+    catalog: "国家"
+    title: "韩诗外传节钞 二卷；薛子 一卷；歌谱 一卷"
+    authors: ["（汉）韩婴 撰", "（明）韩锡 辑", "（明）薛瑄 撰"]
+    dynasty: "汉/明"
+    edition: "抄本"
+    imprint: "明天启五年（1625）韩锡抄"
+    year: 1625
+    remarks: "蒋凤藻跋。"
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0003
+    catalog: "国家"
+    title: "洹词 十二卷"
+    authors: ["（明）崔铣 撰"]
+    dynasty: "明"
+    edition: "明嘉靖刻本"
+    imprint: "赵府味经堂刻"
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0004
+    catalog: "国家"
+    title: "空同诗选 四卷"
+    authors: ["（明）李梦阳 撰", "（明）杨慎 批选"]
+    dynasty: "明"
+    edition: "明嘉靖刻本"
+    imprint: null
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0005
+    catalog: "国家"
+    title: "史记钞 九十一卷"
+    authors: ["（明）茅坤 辑"]
+    dynasty: "明"
+    edition: "朱墨套印本"
+    imprint: "明泰昌元年（1620）闵振业刻"
+    year: 1620
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0006
+    catalog: "国家"
+    title: "四然斋藏稿 十卷"
+    authors: ["（明）黄体仁 撰"]
+    dynasty: "明"
+    edition: "刻本"
+    imprint: "明万历刻"
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0007
+    catalog: "国家"
+    title: "宋史新编 二百卷"
+    authors: ["（明）柯维骐 撰"]
+    dynasty: "明"
+    edition: "刻本"
+    imprint: "明嘉靖刻"
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0008
+    catalog: "国家"
+    title: "宋学士文集 七十五卷"
+    authors: ["（明）宋濂 撰"]
+    dynasty: "明"
+    edition: "刻本（重修本）"
+    imprint: "明正德九年（1514）张缙刻；嘉靖四十四年（1565）刘祜重修"
+    year: 1565
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-n-0009
+    catalog: "国家"
+    title: "文苑英华 一千卷"
+    authors: ["（宋）李昉等 辑"]
+    dynasty: "宋（编）/明（刻）"
+    edition: "刻本"
+    imprint: "明隆庆元年（1567）胡维新、戚继光刻"
+    year: 1567
+    remarks: null
+    provenance: null
+    source_url: null
+
+  # —— 湖北省珍贵古籍名录（部分） ——
+  - id: rb-h-0001
+    catalog: "湖北省"
+    title: "集千家注杜工部诗集 二十卷；文集 二卷；附录 一卷"
+    authors: ["（唐）杜甫 撰"]
+    dynasty: "唐（作者）/明（刻）"
+    edition: "刻本（明易山人印本）"
+    imprint: "明嘉靖十五年（1536）玉几山人刻"
+    year: 1536
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0002
+    catalog: "湖北省"
+    title: "类笺唐王右丞诗集 十卷；文集 四卷；集外编 一卷；年谱 一卷；唐诸家同咏集 一卷；赠题集 一卷；历朝诸家评王右丞诗画钞 一卷"
+    authors: ["（唐）王维 撰", "（明）顾起经 辑"]
+    dynasty: "唐/明"
+    edition: "刻本"
+    imprint: "明嘉靖三十五年（1556）顾氏奇字斋刻"
+    year: 1556
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0003
+    catalog: "湖北省"
+    title: "诗家谭薮 一卷"
+    authors: ["佚名 撰"]
+    dynasty: "明"
+    edition: "抄本"
+    imprint: null
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0004
+    catalog: "湖北省"
+    title: "苏黄题跋二种"
+    authors: ["（宋）苏轼", "（宋）黄庭坚"]
+    dynasty: "宋（作者）/明（刻）"
+    edition: "明刻本"
+    imprint: null
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0005
+    catalog: "湖北省"
+    title: "象山先生全集 三十六卷"
+    authors: ["（宋）陆九渊（陆象山） 撰"]
+    dynasty: "宋（作者）/明清（刻修）"
+    edition: "刻本（重修本）"
+    imprint: "明嘉靖四十年（1561）刻；清康熙十九年（1680）重修"
+    year: 1680
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0006
+    catalog: "湖北省"
+    title: "新雕徂徕石先生文集 二十卷"
+    authors: ["（宋）石介 撰"]
+    dynasty: "宋（作者）/明（抄）"
+    edition: "明抄本"
+    imprint: null
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+  - id: rb-h-0007
+    catalog: "湖北省"
+    title: "政和五礼新仪 二百二十卷"
+    authors: ["（宋）郑居中等 撰"]
+    dynasty: "宋（作者）/清（抄）"
+    edition: "清抄本"
+    imprint: null
+    year: null
+    remarks: null
+    provenance: null
+    source_url: null
+
+---
+
+原文：
+（国家珍贵古籍名录书影）
+范忠宣公文集二十卷 （宋）范纯仁撰 明嘉靖范惟元等刻本 柯逢时跋
+韩诗外传节钞二卷 （汉）韩婴撰 （明）韩锡辑 薛子一卷 （明）薛瑄撰 歌谱一卷 明天启五年（1625）韩锡抄本 蒋凤藻跋
+洹词十二卷 （明）崔铣撰 明嘉靖赵府味经堂刻本
+空同诗选四卷 （明）李梦阳撰 （明）杨慎批选 明嘉靖刻本
+史记钞九十一卷 （明）茅坤辑 明泰昌元年（1620）闵振业刻朱墨套印本
+四然斋藏稿十卷 （明）黄体仁撰 明万历刻本
+宋史新编二百卷 （明）柯维骐撰 明嘉靖刻本
+宋学士文集七十五卷 （明）宋濂撰 明正德九年（1514）张缙刻嘉靖四十四年（1565）刘祜重修本
+文苑英华一千卷 （宋）李昉等辑 明隆庆元年（1567）胡维新、戚继光刻本
+
+（湖北省珍贵古籍名录书影）
+集千家注杜工部诗集二十卷文集二卷附录一卷 （唐）杜甫撰 明嘉靖十五年（1536）玉几山人刻明易山人印本
+类笺唐王右丞诗集十卷文集四卷集外编一卷年谱一卷唐诸家同咏集一卷赠题集一卷历朝诸家评王右丞诗画钞一卷 （唐）王维撰 （明）顾起经辑
+明嘉靖三十五年（1556）顾氏奇字斋刻本
+诗家谭薮一卷 佚名撰 明抄本
+苏黄题跋二种 （宋）苏轼 （宋）黄庭坚撰 明刻本
+象山先生全集三十六卷 （宋）陆象山（陆九渊）撰 明嘉靖四十年刻（1561）清康熙十九年（1680）重修本
+新雕徂徕石先生文集二十卷 （宋）石介撰 明抄本
+政和五礼新仪二百二十卷 （宋）郑居中等撰 清抄本
+

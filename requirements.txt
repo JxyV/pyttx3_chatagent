@@ -1,0 +1,30 @@
+langchain>=0.2.14
+langchain-community>=0.2.12
+langchain-openai>=0.1.22
+langchain-ollama>=0.1.1
+langchain-milvus>=0.1.0
+# chromadb>=0.5.5  # 已替换为 Milvus Lite
+pymilvus>=2.4.0
+sentence-transformers>=3.0.0
+pypdf>=4.2.0
+python-dotenv>=1.0.1
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+rich>=13.7.1
+websockets>=12.0
+pydantic>=2.0.0
+
+# 语音处理依赖 - 实时语音识别和语音合成
+pyaudio>=0.2.11
+numpy>=1.21.0
+# 阿里云DashScope (支持gummy-realtime-v1和Qwen3-TTS)
+dashscope>=1.14.0
+# WebSocket客户端
+websocket-client>=1.6.0
+# 本地语音识别 - FunASR Paraformer
+funasr>=1.0.0
+modelscope>=1.9.0
+torch>=2.0.0
+torchaudio>=2.0.0
+# 本地TTS - pyttsx3
+pyttsx3>=2.90

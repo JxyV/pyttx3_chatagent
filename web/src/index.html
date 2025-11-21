@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>湖北博物馆智能问答系统</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 头部 -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-museum"></i>
+                    <h1>湖北博物馆智能问答</h1>
+                </div>
+                <div class="header-controls">
+                    <button id="clearChat" class="btn btn-secondary">
+                        <i class="fas fa-trash"></i>
+                        清空对话
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主聊天区域 -->
+        <main class="chat-container">
+            <!-- 聊天消息区域 -->
+            <div class="chat-messages" id="chatMessages">
+                <div class="welcome-message">
+                    <div class="welcome-content">
+                        <i class="fas fa-robot"></i>
+                        <h2>欢迎来到湖北博物馆智能问答系统</h2>
+                        <p>我是您的专属博物馆导游，可以为您介绍湖北博物馆的历史文化、展品信息、参观指南等。</p>
+                        <div class="suggested-questions">
+                            <h3>您可以问我：</h3>
+                            <div class="question-chips">
+                                <button class="chip" data-question="湖北博物馆有哪些特色展品？">
+                                    特色展品介绍
+                                </button>
+                                <button class="chip" data-question="湖北博物馆的开放时间是什么？">
+                                    开放时间
+                                </button>
+                                <button class="chip" data-question="如何预约参观湖北博物馆？">
+                                    参观预约
+                                </button>
+                                <button class="chip" data-question="湖北博物馆的历史背景是什么？">
+                                    历史背景
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 语音识别显示区域 -->
+            <div class="voice-recognition-area" id="voiceRecognitionArea" style="display: none;">
+                <div class="voice-recognition-circle">
+                    <div class="voice-recognition-text" id="voiceRecognitionText">正在听取您的语音...</div>
+                </div>
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="chat-input-container">
+                <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <span>AI正在思考中...</span>
+                </div>
+                
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <textarea 
+                            id="messageInput" 
+                            placeholder="请输入您的问题..."
+                            rows="1"
+                            maxlength="1000"
+                        ></textarea>
+                        <div class="input-controls">
+                            <button id="micBtn" class="mic-btn" title="麦克风">
+                                <i class="fas fa-microphone"></i>
+                            </button>
+                            <button id="stopBtn" class="stop-btn" title="停止">
+                                <i class="fas fa-stop"></i>
+                            </button>
+                            <button id="sendBtn" class="send-btn" title="发送消息">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="input-footer">
+                        <span class="char-count">0/1000</span>
+                        <div class="voice-status" id="voiceStatus" style="display: none;">
+                            <i class="fas fa-circle recording"></i>
+                            <span>正在录音...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 侧边栏 -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h3>对话历史</h3>
+                <button id="closeSidebar" class="close-btn">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="sidebar-content">
+                <div class="history-list" id="historyList">
+                    <!-- 历史记录将在这里动态生成 -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- 语音播放控制 -->
+        <div class="audio-controls" id="audioControls" style="display: none;">
+            <div class="audio-info">
+                <i class="fas fa-volume-up"></i>
+                <span>正在播放回答</span>
+            </div>
+            <div class="audio-controls-buttons">
+                <button id="pauseAudio" class="btn btn-small">
+                    <i class="fas fa-pause"></i>
+                </button>
+                <button id="stopAudio" class="btn btn-small">
+                    <i class="fas fa-stop"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 连接状态指示器 -->
+    <div class="connection-status" id="connectionStatus">
+        <div class="status-indicator connected">
+            <i class="fas fa-circle"></i>
+            <span>已连接</span>
+        </div>
+    </div>
+
+    <!-- 加载动画 -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>正在连接服务器...</p>
+        </div>
+    </div>
+
+    <!-- 错误提示模态框 -->
+    <div class="modal" id="errorModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>错误提示</h3>
+                <button class="close-btn" id="closeErrorModal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="errorMessage"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="confirmError">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
