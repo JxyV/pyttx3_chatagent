@@ -99,9 +99,14 @@ class GummyRealtimeSTT(STTModel):
         """启动流式识别"""
         self._stt_client.start_streaming(result_callback=result_callback)
     
-    def send_audio_frame(self, audio_frame: bytes):
-        """发送音频帧（用于流式识别）"""
-        self._stt_client.send_audio_frame(audio_frame)
+    def send_audio_frame(self, audio_frame: bytes) -> bool:
+        """
+        发送音频帧（用于流式识别）
+        
+        Returns:
+            bool: 是否成功发送（False表示识别器已停止）
+        """
+        return self._stt_client.send_audio_frame(audio_frame)
     
     def stop_streaming(self) -> str:
         """停止流式识别并返回结果"""

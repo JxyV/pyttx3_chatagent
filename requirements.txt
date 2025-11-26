@@ -17,7 +17,7 @@ pydantic>=2.0.0
 # 语音处理依赖 - 实时语音识别和语音合成
 pyaudio>=0.2.11
 numpy>=1.21.0
-# 阿里云DashScope (支持gummy-realtime-v1和Qwen3-TTS)
+# 阿里云DashScope (支持gummy-realtime-v1)
 dashscope>=1.14.0
 # WebSocket客户端
 websocket-client>=1.6.0

@@ -12,6 +12,13 @@ from dashscope.audio.asr import (
     TranslationRecognizerRealtime,
 )
 
+# 导入dashscope的异常类，用于更好的错误处理
+try:
+    from dashscope.common.error import UnexpectedMessageReceived, InvalidParameter
+except ImportError:
+    UnexpectedMessageReceived = Exception
+    InvalidParameter = ValueError
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +37,12 @@ class _GummyRecognitionCollector(TranslationRecognizerCallback):
         logger.debug("Gummy识别连接已打开")
 
     def on_close(self) -> None:
+        """连接关闭回调（可能是正常关闭或异常关闭）"""
         logger.debug("Gummy识别连接已关闭")
+        # 如果已经有错误，说明是异常关闭；否则可能是正常关闭
+        if self.error is None and not self._finished:
+            # 正常关闭，标记完成但不设置错误
+            logger.debug("识别连接正常关闭")
         self._finished = True
         self._event.set()
 
@@ -82,7 +94,37 @@ class _GummyRecognitionCollector(TranslationRecognizerCallback):
         """识别出错"""
         error_msg = str(result) if result else "未知错误"
         logger.error("Gummy识别错误: %s", error_msg)
-        self.error = RuntimeError(f"语音识别失败: {error_msg}")
+        
+        # 检查是否是WebSocket连接关闭错误
+        # result可能是字典、字符串或异常对象
+        error_str = error_msg.lower()
+        error_type_str = ""
+        
+        # 尝试提取错误类型信息
+        if hasattr(result, '__class__'):
+            error_type_str = result.__class__.__name__.lower()
+        if isinstance(result, dict):
+            error_type_str = str(result.get('code', '')).lower()
+        
+        # 判断是否是连接相关的错误
+        is_connection_error = (
+            "websocket" in error_str or 
+            "close" in error_str or 
+            "connection" in error_str or
+            "unexpectedmessage" in error_type_str or
+            "unexpected" in error_str
+        )
+        
+        # 记录已收集的识别结果数量，用于调试
+        if self.sentences:
+            logger.info(f"检测到错误，但已有 {len(self.sentences)} 条识别结果: {self.sentences}")
+        
+        if is_connection_error:
+            logger.warning("检测到WebSocket连接关闭，这可能是网络问题或服务器主动关闭")
+            # 对于连接关闭，使用更温和的错误处理，允许返回已收集的结果
+            self.error = ConnectionError(f"语音识别连接中断: {error_msg}")
+        else:
+            self.error = RuntimeError(f"语音识别失败: {error_msg}")
         self._event.set()
 
     def wait(self, timeout: float | None = None) -> str:
@@ -166,22 +208,36 @@ class GummyRealtimeSTT:
             sample_rate: 采样率（默认 16000）
         """
         if self.recognizer is not None:
-            logger.warning("流式识别已在运行中")
-            return
+            logger.warning("流式识别已在运行中，先清理旧连接")
+            try:
+                self.stop_streaming()
+            except Exception as e:
+                logger.warning(f"清理旧连接时出错: {e}")
         
         self.callback = _GummyRecognitionCollector(result_callback=result_callback)
         
-        self.recognizer = TranslationRecognizerRealtime(
-            model=self.model,
-            format="pcm",
-            sample_rate=sample_rate,
-            transcription_enabled=True,
-            translation_enabled=False,
-            callback=self.callback,
-        )
-        
-        logger.info("启动 gummy-realtime-v1 流式识别")
-        self.recognizer.start()
+        try:
+            self.recognizer = TranslationRecognizerRealtime(
+                model=self.model,
+                format="pcm",
+                sample_rate=sample_rate,
+                transcription_enabled=True,
+                translation_enabled=False,
+                callback=self.callback,
+            )
+            
+            logger.info("启动 gummy-realtime-v1 流式识别")
+            self.recognizer.start()
+        except (UnexpectedMessageReceived, ConnectionError, OSError) as e:
+            logger.error(f"启动流式识别时连接失败: {e}")
+            self.recognizer = None
+            self.callback = None
+            raise ConnectionError(f"无法建立语音识别连接，请检查网络: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"启动流式识别失败: {e}")
+            self.recognizer = None
+            self.callback = None
+            raise
 
     def send_audio_frame(self, audio_frame: bytes):
         """
@@ -189,15 +245,46 @@ class GummyRealtimeSTT:
         
         Args:
             audio_frame: PCM格式的音频数据
+        
+        Returns:
+            bool: 是否成功发送（False表示识别器已停止）
         """
         if self.recognizer is None:
             logger.warning("流式识别未启动，无法发送音频帧")
-            return
+            return False
         
         try:
             self.recognizer.send_audio_frame(audio_frame)
+            return True
+        except InvalidParameter as e:
+            # 识别器已停止（可能是因为之前的错误或超时）
+            error_msg = str(e).lower()
+            if "stopped" in error_msg or "has stopped" in error_msg:
+                logger.warning(f"识别器已停止，无法发送音频帧: {e}")
+                # 清理状态
+                self.recognizer = None
+                if self.callback:
+                    self.callback.error = RuntimeError(f"识别器已停止: {str(e)}")
+                    self.callback._event.set()
+                return False
+            else:
+                # 其他参数错误
+                logger.error(f"发送音频帧参数错误: {e}")
+                raise
+        except (UnexpectedMessageReceived, ConnectionError, OSError) as e:
+            # WebSocket连接关闭相关的错误
+            logger.warning(f"发送音频帧时检测到连接问题: {e}")
+            # 清理状态
+            self.recognizer = None
+            # 标记回调中的错误
+            if self.callback:
+                self.callback.error = ConnectionError(f"连接中断: {str(e)}")
+                self.callback._event.set()
+            return False
         except Exception as e:
             logger.error(f"发送音频帧失败: {e}")
+            # 未知错误，不清理状态，让上层决定如何处理
+            raise
 
     def stop_streaming(self) -> str:
         """
@@ -207,6 +294,12 @@ class GummyRealtimeSTT:
             识别结果文本
         """
         if self.recognizer is None:
+            # 如果识别器已经为None，尝试返回已收集的结果
+            if self.callback and hasattr(self.callback, 'sentences'):
+                text = " ".join(self.callback.sentences).strip()
+                if text:
+                    logger.info(f"识别器已停止，返回已收集的识别结果: {text}")
+                    return text
             return ""
         
         try:
@@ -214,16 +307,68 @@ class GummyRealtimeSTT:
             # 等待识别完成
             text = self.callback.wait(timeout=30)
             return text
+        except InvalidParameter as e:
+            # 识别器已停止
+            error_msg = str(e).lower()
+            if "stopped" in error_msg or "has stopped" in error_msg:
+                logger.warning(f"停止流式识别时识别器已停止: {e}")
+            else:
+                logger.warning(f"停止流式识别时参数错误: {e}")
+            # 尝试返回已收集的识别结果
+            if self.callback and hasattr(self.callback, 'sentences'):
+                text = " ".join(self.callback.sentences).strip()
+                if text:
+                    logger.info(f"返回已收集的识别结果: {text}")
+                    return text
+            return ""
+        except (UnexpectedMessageReceived, ConnectionError) as e:
+            # WebSocket连接关闭是常见情况，不算严重错误
+            logger.warning(f"停止流式识别时连接已关闭: {e}")
+            # 尝试返回已收集的识别结果
+            if self.callback and hasattr(self.callback, 'sentences'):
+                text = " ".join(self.callback.sentences).strip()
+                if text:
+                    logger.info(f"返回已收集的识别结果: {text}")
+                    return text
+            return ""
+        except TimeoutError as e:
+            logger.warning(f"等待识别结果超时: {e}")
+            # 超时也尝试返回已收集的结果
+            if self.callback and hasattr(self.callback, 'sentences'):
+                text = " ".join(self.callback.sentences).strip()
+                if text:
+                    logger.info(f"超时但返回已收集的识别结果: {text}")
+                    return text
+            return ""
         except Exception as e:
             logger.error(f"停止流式识别失败: {e}")
+            # 即使出错也尝试返回已收集的结果
+            if self.callback and hasattr(self.callback, 'sentences'):
+                text = " ".join(self.callback.sentences).strip()
+                if text:
+                    logger.info(f"出错但返回已收集的识别结果: {text}")
+                    return text
             return ""
         finally:
-            # 清理
-            close_fn = getattr(self.recognizer, "close", None)
-            if callable(close_fn):
-                close_fn()
-            self.recognizer = None
-            self.callback = None
+            # 清理资源，确保连接关闭
+            try:
+                close_fn = getattr(self.recognizer, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception as e:
+                logger.debug(f"关闭连接时出错（可忽略）: {e}")
+            finally:
+                self.recognizer = None
+                self.callback = None
+    
+    def is_streaming(self) -> bool:
+        """
+        检查流式识别是否正在运行
+        
+        Returns:
+            bool: 是否正在运行
+        """
+        return self.recognizer is not None
 
     @staticmethod
     def _read_chunks(path: str | Path, chunk_size: int = 3200):

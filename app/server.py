@@ -411,6 +411,7 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                                 return  # 忽略空文本
                             
                             # 将结果放入队列，由主循环处理
+                            # 即使识别器状态变化，也要处理已经收到的识别结果
                             # 使用保存的主事件循环引用
                             asyncio.run_coroutine_threadsafe(
                                 result_queue.put({
@@ -419,7 +420,7 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                                 }),
                                 main_loop
                             )
-                            logger.debug(f"[{client_id}] 识别结果已放入队列: {text[:50]}... (final: {is_final})")
+                            logger.info(f"[{client_id}] 识别结果已放入队列: {text[:50]}... (final: {is_final})")
                         except Exception as e:
                             logger.error(f"[{client_id}] 发送识别结果到队列失败: {e}", exc_info=True)
                     
@@ -436,19 +437,47 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                     # 启动任务处理识别结果队列
                     async def process_results():
                         logger.info(f"[{client_id}] 开始处理识别结果队列")
-                        while streaming_started:
+                        # 使用一个标志来控制循环，即使streaming_started变为False，也要处理完队列中的结果
+                        should_continue = True
+                        while should_continue:
                             try:
-                                result = await asyncio.wait_for(result_queue.get(), timeout=0.1)
+                                # 增加超时时间，确保即使streaming_started变为False，也能处理完队列中的结果
+                                result = await asyncio.wait_for(result_queue.get(), timeout=1.0)
                                 logger.info(f"[{client_id}] 从队列获取识别结果: type={result.get('type')}, text={result.get('text', '')[:50]}")
                                 
-                                # 发送识别结果到前端
-                                await websocket.send_text(json.dumps(result))
-                                logger.debug(f"[{client_id}] ✅ 识别结果已发送到前端")
+                                # 发送识别结果到前端（使用安全的发送方法）
+                                try:
+                                    await websocket.send_text(json.dumps(result))
+                                    logger.info(f"[{client_id}] ✅ 识别结果已发送到前端: {result.get('text', '')[:50]}")
+                                except Exception as send_error:
+                                    logger.warning(f"[{client_id}] 发送识别结果到前端失败（可能WebSocket已关闭）: {send_error}")
+                                    # 如果WebSocket已关闭，停止处理
+                                    should_continue = False
+                                    break
+                                    
                             except asyncio.TimeoutError:
+                                # 超时时检查是否应该继续
+                                if not streaming_started:
+                                    # 再等待一小段时间，确保所有结果都已放入队列
+                                    await asyncio.sleep(0.5)
+                                    # 尝试再获取一次结果
+                                    try:
+                                        result = await asyncio.wait_for(result_queue.get(), timeout=0.1)
+                                        logger.info(f"[{client_id}] 延迟获取到识别结果: {result.get('text', '')[:50]}")
+                                        await websocket.send_text(json.dumps(result))
+                                        logger.info(f"[{client_id}] ✅ 延迟发送识别结果到前端")
+                                    except (asyncio.TimeoutError, Exception):
+                                        # 没有更多结果了，退出循环
+                                        should_continue = False
+                                        break
                                 continue
                             except Exception as e:
                                 logger.error(f"[{client_id}] 处理识别结果失败: {e}", exc_info=True)
-                                break
+                                # 检查是否是WebSocket关闭错误
+                                error_str = str(e).lower()
+                                if "websocket" in error_str or "connection" in error_str or "close" in error_str:
+                                    should_continue = False
+                                    break
                         logger.info(f"[{client_id}] 识别结果处理任务结束")
                     
                     result_task = asyncio.create_task(process_results())
@@ -477,10 +506,45 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                         if streaming_started and stt_instance:
                             # 发送音频帧到流式识别器
                             try:
-                                stt_instance.send_audio_frame(audio_bytes)
-                                logger.info(f"[{client_id}] ✅ 音频帧已发送到识别器: {len(audio_bytes)} 字节")
+                                success = stt_instance.send_audio_frame(audio_bytes)
+                                if success:
+                                    logger.info(f"[{client_id}] ✅ 音频帧已发送到识别器: {len(audio_bytes)} 字节")
+                                else:
+                                    # send_audio_frame返回False表示识别器已停止
+                                    logger.warning(f"[{client_id}] ⚠️ 识别器已停止，无法发送音频帧")
+                                    streaming_started = False
+                                    stt_instance = None
+                                    # 通知前端识别器已停止
+                                    await websocket.send_text(json.dumps({
+                                        'type': 'error',
+                                        'error': '语音识别器已停止，请重新开始录音'
+                                    }))
+                            except (ConnectionError, OSError) as e:
+                                # WebSocket连接中断，需要重新建立连接
+                                logger.warning(f"[{client_id}] ⚠️ 发送音频帧时连接中断: {e}")
+                                streaming_started = False
+                                try:
+                                    stt_instance.stop_streaming()
+                                except:
+                                    pass
+                                stt_instance = None
+                                # 通知前端连接中断
+                                await websocket.send_text(json.dumps({
+                                    'type': 'error',
+                                    'error': '语音识别连接中断，请重新开始录音'
+                                }))
                             except Exception as e:
-                                logger.error(f"[{client_id}] ❌ 发送音频帧失败: {e}", exc_info=True)
+                                logger.error(f"[{client_id}] ❌ 发送音频帧失败: {e}")
+                                # 检查是否是识别器停止的错误
+                                error_str = str(e).lower()
+                                if "stopped" in error_str or "has stopped" in error_str:
+                                    logger.warning(f"[{client_id}] ⚠️ 识别器已停止，重置状态")
+                                    streaming_started = False
+                                    stt_instance = None
+                                    await websocket.send_text(json.dumps({
+                                        'type': 'error',
+                                        'error': '语音识别器已停止，请重新开始录音'
+                                    }))
                         else:
                             logger.warning(f"[{client_id}] ⚠️ 流式识别未启动或STT实例不存在 (streaming_started={streaming_started}, stt_instance={stt_instance is not None})")
                             # 如果没有启动流式识别，使用同步识别
@@ -495,21 +559,47 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                 elif message_type == 'end':
                     # 结束流式识别
                     if streaming_started and stt_instance:
-                        final_text = stt_instance.stop_streaming()
-                        streaming_started = False
-                        logger.info(f"[{client_id}] 流式识别已停止")
-                        
-                        # 如果有最终识别结果，发送给前端
-                        if final_text and final_text.strip():
-                            await websocket.send_text(json.dumps({
-                                'type': 'final',
-                                'text': final_text
-                            }))
+                        try:
+                            final_text = stt_instance.stop_streaming()
+                            streaming_started = False
+                            logger.info(f"[{client_id}] 流式识别已停止")
+                            
+                            # 如果有最终识别结果，发送给前端
+                            if final_text and final_text.strip():
+                                try:
+                                    await websocket.send_text(json.dumps({
+                                        'type': 'final',
+                                        'text': final_text
+                                    }))
+                                    logger.info(f"[{client_id}] ✅ 最终识别结果已发送: {final_text}")
+                                except Exception as send_error:
+                                    logger.warning(f"[{client_id}] 发送最终识别结果失败（WebSocket可能已关闭）: {send_error}")
+                        except Exception as e:
+                            logger.warning(f"[{client_id}] 停止流式识别时出错（可能连接已关闭）: {e}")
+                            streaming_started = False
+                            # 即使出错，也尝试获取已收集的结果
+                            if stt_instance and hasattr(stt_instance, 'callback'):
+                                callback = stt_instance.callback
+                                if callback and hasattr(callback, 'sentences') and callback.sentences:
+                                    final_text = " ".join(callback.sentences).strip()
+                                    if final_text:
+                                        try:
+                                            await websocket.send_text(json.dumps({
+                                                'type': 'final',
+                                                'text': final_text
+                                            }))
+                                            logger.info(f"[{client_id}] ✅ 从错误中恢复最终识别结果: {final_text}")
+                                        except Exception:
+                                            pass
+                            stt_instance = None
                     
-                    await websocket.send_text(json.dumps({
-                        'type': 'status',
-                        'message': '语音识别已结束'
-                    }))
+                    try:
+                        await websocket.send_text(json.dumps({
+                            'type': 'status',
+                            'message': '语音识别已结束'
+                        }))
+                    except Exception as e:
+                        logger.debug(f"[{client_id}] 发送状态消息失败（WebSocket可能已关闭）: {e}")
                     
                 else:
                     logger.warning(f"[{client_id}] 未知消息类型: {message_type}")
@@ -530,11 +620,17 @@ async def realtime_speech_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info(f"[{client_id}] 实时语音识别客户端断开")
         if streaming_started and stt_instance:
-            stt_instance.stop_streaming()
+            try:
+                stt_instance.stop_streaming()
+            except Exception as e:
+                logger.debug(f"[{client_id}] 清理连接时出错（可忽略）: {e}")
     except Exception as e:
         logger.error(f"[{client_id}] 实时语音识别错误: {e}", exc_info=True)
         if streaming_started and stt_instance:
-            stt_instance.stop_streaming()
+            try:
+                stt_instance.stop_streaming()
+            except Exception as e:
+                logger.debug(f"[{client_id}] 清理连接时出错（可忽略）: {e}")
         try:
             await websocket.send_text(json.dumps({
                 'type': 'error',
@@ -542,6 +638,14 @@ async def realtime_speech_endpoint(websocket: WebSocket):
             }))
         except:
             pass
+    finally:
+        # 确保资源清理
+        if stt_instance:
+            try:
+                stt_instance.stop_streaming()
+            except:
+                pass
+            stt_instance = None
 
 
 @app.websocket("/ws/tts")
