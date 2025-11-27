@@ -19,6 +19,8 @@ class MuseumChatApp {
         this.recognizedText = ''; // 当前显示的识别结果（用于实时显示）
         this.finalResults = []; // 累积所有的final识别结果
         this.recognitionTimeout = null;
+        this.silenceTimeout = null; // 2秒静音检测定时器
+        this.lastRecognitionTime = 0; // 最后一次识别到内容的时间
         this.lastAudioSendTime = 0;
         this.audioSendInterval = 100; // 最小发送间隔100ms，符合官方建议
         this.streamingSessionActive = false;
@@ -32,9 +34,17 @@ class MuseumChatApp {
         this.ttsWebSocket = null;
         this.ttsBuffer = '';
         this.isStreamingTTS = false;
+        this.currentTTSRequestId = null; // 当前TTS请求ID，用于取消旧的TTS
+        this.streamingTTSBuffer = ''; // 流式TTS文本缓冲区
+        this.streamingTTSRequestId = null; // 当前流式TTS的请求ID
+        this.isStreamingTTSActive = false; // 是否正在流式TTS
+        this.streamingTTSSentenceQueue = []; // 流式TTS句子队列
+        this.isProcessingTTSSentence = false; // 是否正在处理TTS句子
         
         // 停止生成标志
         this.shouldIgnoreResponse = false;
+        this.isGeneratingResponse = false; // 是否正在生成RAG响应
+        this.currentResponseRequestId = null; // 当前响应请求ID，用于取消旧的响应
         
         this.init();
     }
@@ -45,6 +55,8 @@ class MuseumChatApp {
         this.initializeEventListeners();
         this.initializeVoiceRecognition();
         this.updateConnectionStatus('connecting');
+        
+        // 不再自动启动语音识别，用户需要手动点击录音按钮启动
     }
 
     initializeSocket() {
@@ -64,31 +76,64 @@ class MuseumChatApp {
         });
 
         this.socket.on('response_start', (data) => {
+            // 检查是否是当前请求的响应
+            const requestId = data.requestId || null;
+            if (requestId && requestId !== this.currentResponseRequestId) {
+                console.log('⏭️ [忽略] 收到旧请求的响应，忽略');
+                return;
+            }
+            
             // 重置忽略标志，开始新的响应
             this.shouldIgnoreResponse = false;
+            this.isGeneratingResponse = true;
+            
+            // 如果是语音模式，准备流式TTS
+            if (this.isVoiceMode) {
+                this.streamingTTSRequestId = requestId;
+                this.streamingTTSBuffer = '';
+                this.isStreamingTTSActive = false; // 等待第一个chunk再启动
+            }
             
             this.showTypingIndicator();
             this.addMessage('assistant', '', true); // 创建空消息用于流式更新
         });
 
         this.socket.on('response_chunk', (data) => {
+            // 检查是否是当前请求的响应
+            const requestId = data.requestId || null;
+            if (requestId && requestId !== this.currentResponseRequestId) {
+                console.log('⏭️ [忽略] 收到旧请求的响应块，忽略');
+                return;
+            }
+            
             // 如果用户点击了停止，忽略后续的响应块
             if (this.shouldIgnoreResponse) {
                 console.log('⏭️ [忽略] 忽略响应块（用户已停止）');
                 return;
             }
             
+            // 文字继续生成（即使TTS被取消）
             this.updateLastMessage(data.content, data.isFirst);
             
-            // 注意：不再在流式生成时进行TTS，而是在 response_end 时统一播放完整回复
-            // 这样可以避免流式TTS和完整TTS的冲突，并且确保播放的是完整准确的回复
+            // 流式TTS：如果是语音输入模式，在文字流式输出的同时进行TTS
+            if ((this.isVoiceMode || data.autoTTS) && data.content) {
+                this.handleStreamingTTS(data.content, requestId);
+            }
         });
 
         this.socket.on('response_end', (data) => {
+            // 检查是否是当前请求的响应
+            const requestId = data.requestId || null;
+            if (requestId && requestId !== this.currentResponseRequestId) {
+                console.log('⏭️ [忽略] 收到旧请求的响应结束，忽略');
+                return;
+            }
+            
             // 如果用户点击了停止，忽略响应结束事件，不播放音频
             if (this.shouldIgnoreResponse) {
                 console.log('⏭️ [忽略] 忽略响应结束事件（用户已停止），不播放音频，不处理响应');
                 this.hideTypingIndicator();
+                this.isGeneratingResponse = false;
                 // 清理可能残留的streaming消息
                 const streamingMessage = this.elements.chatMessages.querySelector('.message[data-streaming="true"]');
                 if (streamingMessage) {
@@ -106,30 +151,25 @@ class MuseumChatApp {
                 return;
             }
             
+            this.isGeneratingResponse = false;
+            
             this.hideTypingIndicator();
             this.finalizeLastMessage(data.fullResponse);
             
-            // 【临时修改】所有输入（包括文字输入）都自动播放语音输出
-            // TODO: 之后需要改回：只有语音输入时才自动播放
-            // 再次检查标志，确保在finalizeLastMessage之后仍然有效
-            if (!this.shouldIgnoreResponse && data.fullResponse) {
-                console.log('🎤 [自动播放] 自动播放语音回复（临时：所有输入都播放）...');
-                this.speakText(data.fullResponse);
-            } else if (this.shouldIgnoreResponse) {
-                console.log('⏭️ [忽略] 在response_end处理过程中检测到停止标志，取消语音播放');
+            // 完成流式TTS：处理剩余的缓冲区文本
+            if (this.isStreamingTTSActive && this.streamingTTSRequestId === requestId) {
+                this.finalizeStreamingTTS();
             }
             
-            // 【原始逻辑 - 已注释，待恢复】
-            // // 自动语音合成（语音输入时）
-            // if (data.autoTTS && data.fullResponse) {
-            //     console.log('🎤 [自动播放] 语音输入，自动播放语音回复...');
-            //     this.speakText(data.fullResponse);
-            // }
-            // // 语音模式时也自动播放（用户通过语音输入）
-            // else if (this.isVoiceMode && data.fullResponse) {
-            //     console.log('🎤 [自动播放] 语音模式，自动播放语音回复...');
-            //     this.speakText(data.fullResponse);
-            // }
+            // 如果是语音输入（isVoiceMode为true）且后端允许自动TTS，但没有启动流式TTS，则播放完整回复
+            if (!this.shouldIgnoreResponse && data.fullResponse && 
+                (this.isVoiceMode || data.autoTTS) && !this.isStreamingTTSActive) {
+                console.log('🎤 [自动播放] 语音输入，自动播放语音回复（非流式模式）...');
+                // 生成新的TTS请求ID
+                const ttsRequestId = Date.now();
+                this.currentTTSRequestId = ttsRequestId;
+                this.speakText(data.fullResponse, ttsRequestId);
+            }
 
             // 本轮对话结束后重置语音模式状态
             this.isVoiceMode = false;
@@ -611,7 +651,9 @@ class MuseumChatApp {
     }
 
     handleRealtimeSpeechResult(data) {
-        console.log('🔍 [DEBUG] 处理语音识别结果，类型:', data.type, '文本:', data.text ? data.text.substring(0, 50) : '无');
+        // 无论RAG是否正在生成，都要处理识别结果
+        console.log('🔍 [DEBUG] 处理语音识别结果，类型:', data.type, '文本:', data.text ? data.text.substring(0, 50) : '无', 
+                   'RAG生成中:', this.isGeneratingResponse);
         
         switch (data.type) {
             case 'ready':
@@ -620,20 +662,26 @@ class MuseumChatApp {
             case 'partial':
             case 'interim':
                 // 部分识别结果（中间结果），实时更新显示
-                console.log('📝 [DEBUG] 中间识别结果:', data.text);
+                // 无论RAG是否正在生成，都要显示识别结果
+                console.log('📝 [DEBUG] 中间识别结果:', data.text, 'RAG生成中:', this.isGeneratingResponse);
                 if (data.text && data.text.trim()) {
-                this.recognizedText = data.text;
-                    // 更新黄色圈圈显示
-                this.updateVoiceRecognitionDisplay(this.recognizedText, false);
+                    this.recognizedText = data.text;
+                    // 更新黄色框框显示（确保显示区域可见）
+                    this.updateVoiceRecognitionDisplay(this.recognizedText, false);
                     // 同时更新输入框，让用户看到实时识别结果
                     this.elements.messageInput.value = this.recognizedText;
                     this.updateCharCount();
-                this.resetRecognitionTimeout();
+                    this.resetRecognitionTimeout();
+                    // 重置2秒静音检测定时器（即使在RAG生成期间也要重置）
+                    this.lastRecognitionTime = Date.now();
+                    this.resetSilenceTimeout();
+                    console.log('✅ [识别显示] 已更新识别结果显示，文本:', this.recognizedText.substring(0, 50));
                 }
                 break;
             case 'final':
                 // 最终识别结果
-                console.log('✅ [DEBUG] 最终识别结果:', data.text);
+                // 无论RAG是否正在生成，都要处理并显示识别结果
+                console.log('✅ [DEBUG] 最终识别结果:', data.text, 'RAG生成中:', this.isGeneratingResponse);
                 if (data.text && data.text.trim()) {
                     const finalText = data.text.trim();
                     
@@ -661,14 +709,21 @@ class MuseumChatApp {
                         this.recognizedText = this.finalResults.join(' ');
                     }
                     
-                    // 更新显示
+                    // 更新显示（确保显示区域可见，即使在RAG生成期间）
                     this.updateVoiceRecognitionDisplay(this.recognizedText, true);
                     // 将最终结果填入输入框（用于显示）
                     this.elements.messageInput.value = this.recognizedText;
                     this.updateCharCount();
                     
+                    // 重置2秒静音检测定时器（final结果后启动2秒定时器）
+                    // 即使在RAG生成期间，也要重置定时器，以便用户可以打断
+                    this.lastRecognitionTime = Date.now();
+                    this.resetSilenceTimeout();
+                    console.log('⏱️ [静音检测] final结果后启动2秒静音定时器，文本:', this.recognizedText.substring(0, 50), 'RAG生成中:', this.isGeneratingResponse);
+                    
                     console.log('💡 [提示] 识别结果已更新，当前完整文本长度:', this.recognizedText.length);
                     console.log('📊 [DEBUG] 累积的final结果数量:', this.finalResults.length);
+                    console.log('✅ [识别显示] 已更新识别结果显示，文本:', this.recognizedText.substring(0, 50));
                 }
                 break;
             case 'end':
@@ -720,28 +775,44 @@ class MuseumChatApp {
         if (text.trim()) {
             this.elements.voiceRecognitionText.textContent = text;
             this.elements.voiceRecognitionArea.style.display = 'block';
+            this.elements.voiceRecognitionArea.classList.add('listening');
             
-            if (isFinal) {
-                // 最终结果，3秒后隐藏
-                setTimeout(() => {
-                    this.hideVoiceRecognitionArea();
-                }, 3000);
-            }
+            // 在常开模式下，不自动隐藏识别区域，保持显示以便用户看到识别内容
+            // 只有在用户明确停止录音或发送消息后才隐藏
+            // if (isFinal) {
+            //     // 最终结果，3秒后隐藏
+            //     setTimeout(() => {
+            //         this.hideVoiceRecognitionArea();
+            //     }, 3000);
+            // }
         }
     }
 
     hideVoiceRecognitionArea() {
+        // 在常开模式下，隐藏识别区域但不清空recognizedText，保持识别结果用于静音检测
         this.elements.voiceRecognitionArea.style.display = 'none';
         this.elements.voiceRecognitionArea.classList.remove('listening');
-        this.recognizedText = '';
-        this.elements.voiceRecognitionText.textContent = '';
+        // 不清空recognizedText，保持识别结果用于下次发送
+        // this.recognizedText = '';
+        // 不清空显示文本，保持显示以便用户看到识别内容（如果需要隐藏，可以清空）
+        // this.elements.voiceRecognitionText.textContent = '';
     }
 
     toggleMicrophone() {
-        if (this.isMicrophoneActive) {
+        if (this.isMicrophoneActive || this.streamingSessionActive) {
+            // 如果正在录音或语音识别正在运行，则停止
+            console.log('🛑 [切换] 停止录音和语音识别');
             this.stopMicrophone();
         } else {
-            this.startMicrophone();
+            // 如果未在录音，则启动语音识别
+            console.log('🎤 [切换] 启动录音和语音识别');
+            // 如果WebSocket连接不存在或已关闭，先启动常开识别
+            if (!this.realtimeRecognition || this.realtimeRecognition.readyState !== WebSocket.OPEN) {
+                this.startContinuousRecognition();
+            } else {
+                // WebSocket连接存在，直接启动麦克风
+                this.startMicrophone();
+            }
         }
     }
 
@@ -749,7 +820,8 @@ class MuseumChatApp {
         try {
             console.log('🎤 [DEBUG] 开始启动麦克风...');
             
-            // 立即停止所有正在播放的音频操作
+            // 立即停止所有正在播放的音频操作（仅在非常开模式下）
+            // 在常开模式下，新识别输入时停止音频
             this.stopAudio();
             console.log('🛑 [DEBUG] 已停止所有音频播放');
             
@@ -853,18 +925,24 @@ class MuseumChatApp {
                 console.warn('⚠️ [DEBUG] WebSocket未连接，无法发送start指令');
             }
 
-            // 清空之前的识别结果，开始新的录音会话
-            this.recognizedText = '';
-            this.finalResults = []; // 清空累积的final结果
-            this.elements.messageInput.value = '';
-            this.updateCharCount();
+            // 清空之前的识别结果，开始新的录音会话（仅在首次启动时）
+            // 在常开模式下，不清空识别结果，保持持续识别
+            if (!this.isMicrophoneActive) {
+                this.recognizedText = '';
+                this.finalResults = []; // 清空累积的final结果
+                this.elements.messageInput.value = '';
+                this.updateCharCount();
+            }
             this.waitingForFinalResult = false; // 重置等待标志
             
             // 启动录音（AudioContext处理已在initializeAudioRecording中设置）
-            this.startRecording();
-            this.elements.voiceRecognitionText.textContent = '请开始说话...';
-            this.elements.voiceRecognitionArea.style.display = 'block';
-            this.elements.voiceRecognitionArea.classList.add('listening');
+            // 如果已经在录音，不重复启动
+            if (!this.isMicrophoneActive) {
+                this.startRecording();
+                this.elements.voiceRecognitionText.textContent = '请开始说话...';
+                this.elements.voiceRecognitionArea.style.display = 'block';
+                this.elements.voiceRecognitionArea.classList.add('listening');
+            }
             
             console.log('✅ [DEBUG] 麦克风启动完成，使用AudioContext直接处理PCM');
         } catch (error) {
@@ -874,7 +952,7 @@ class MuseumChatApp {
     }
 
     sendRecognizedText() {
-        // 发送识别结果的通用方法
+        // 发送识别结果的通用方法（保留用于兼容）
         // 直接使用 recognizedText，它已经在收到 final 消息时被正确更新
         // 这样可以避免重复合并，因为后端在 stop_streaming 时会发送包含所有结果的最终 final 消息
         const finalText = (this.recognizedText && this.recognizedText.trim()) 
@@ -887,42 +965,20 @@ class MuseumChatApp {
             return;
         }
         
-        console.log('📤 [DEBUG] 自动发送最终完整识别结果:', finalText);
-        console.log('📊 [DEBUG] recognizedText长度:', this.recognizedText.length, 'finalResults数量:', this.finalResults.length);
-        
-        // 标记为语音模式，以便自动播放语音回复
-        this.isVoiceMode = true;
-        
-        // 添加用户消息到界面（标记为语音输入）
-        this.addMessage('user', finalText, false, true);
-        
-        // 发送到服务器
-        this.socket.emit('send_message', {
-            message: finalText,
-            sessionId: this.socket.id
-        });
-        
-        // 清空输入框和识别结果
-        this.elements.messageInput.value = '';
-        this.recognizedText = '';
-        this.finalResults = [];
-        this.updateCharCount();
+        // 使用新的发送方法
+        this.sendRecognizedTextToRAG(finalText);
         
         // 重置等待标志
         this.waitingForFinalResult = false;
         
         // 隐藏欢迎消息
         this.hideWelcomeMessage();
-        
-        // 隐藏语音识别区域
-        this.hideVoiceRecognitionArea();
-        
-        // 准备下次录音（不关闭连接）
-        this.prepareForNextRecording();
     }
 
     stopMicrophone() {
         console.log('🛑 [DEBUG] 停止麦克风...');
+        
+        // 先停止MediaRecorder录音
         if (this.mediaRecorder && this.isMicrophoneActive) {
             this.stopRecording();
             // 结束信号会在 onstop 事件中的 sendAudioData 里发送
@@ -930,12 +986,75 @@ class MuseumChatApp {
             console.warn('⚠️ [DEBUG] 麦克风未在录音状态');
         }
         
-        // 设置等待标志，表示已停止录音，等待识别完全结束
-        this.waitingForFinalResult = true;
+        // 停止常开语音识别（这会关闭WebSocket连接和停止所有识别活动）
+        this.stopContinuousRecognition();
         
-        console.log('💡 [提示] 停止录音，等待识别完全结束后发送最终完整结果...');
+        // 重置状态标志
+        this.isMicrophoneActive = false;
+        this.streamingSessionActive = false;
+        this.isVoiceActive = false;
+        this.waitingForFinalResult = false;
+        
+        // 更新按钮状态
+        this.updateMicrophoneButton();
+        
+        console.log('💡 [提示] 停止录音，语音识别已完全关闭');
         console.log('📊 [DEBUG] 当前累积的final结果:', this.finalResults);
-        // 不立即发送，等待 status: 语音识别已结束 消息，确保获取到所有final结果
+    }
+    
+    stopContinuousRecognition() {
+        console.log('🛑 [停止] 停止持续语音识别...');
+        
+        // 停止流式识别会话
+        if (this.realtimeRecognition && this.realtimeRecognition.readyState === WebSocket.OPEN) {
+            try {
+                this.realtimeRecognition.send(JSON.stringify({ type: 'end' }));
+                console.log('📤 [停止] 已发送结束信号');
+            } catch (err) {
+                console.error('❌ [停止] 发送结束信号失败:', err);
+            }
+        }
+        
+        // 关闭WebSocket连接
+        if (this.realtimeRecognition) {
+            try {
+                // 移除所有事件监听器，避免内存泄漏
+                this.realtimeRecognition.onopen = null;
+                this.realtimeRecognition.onmessage = null;
+                this.realtimeRecognition.onerror = null;
+                this.realtimeRecognition.onclose = null;
+                
+                // 关闭连接
+                if (this.realtimeRecognition.readyState === WebSocket.OPEN || 
+                    this.realtimeRecognition.readyState === WebSocket.CONNECTING) {
+                    this.realtimeRecognition.close();
+                    console.log('🔌 [停止] 已关闭WebSocket连接');
+                }
+            } catch (err) {
+                console.error('❌ [停止] 关闭WebSocket连接失败:', err);
+            }
+            this.realtimeRecognition = null;
+        }
+        
+        // 清理音频资源
+        this.cleanupAudioResources();
+        
+        // 隐藏语音识别区域
+        this.hideVoiceRecognitionArea();
+        
+        // 重置状态标志
+        this.streamingSessionActive = false;
+        this.isVoiceActive = false;
+        
+        // 清空识别结果
+        this.recognizedText = '';
+        this.finalResults = [];
+        if (this.elements.messageInput) {
+            this.elements.messageInput.value = '';
+            this.updateCharCount();
+        }
+        
+        console.log('✅ [停止] 持续语音识别已完全停止');
     }
     
     prepareForNextRecording() {
@@ -1016,16 +1135,15 @@ class MuseumChatApp {
 
     updateMicrophoneButton() {
         const micBtn = this.elements.micBtn;
-        const icon = micBtn.querySelector('i');
         
-        if (this.isMicrophoneActive) {
+        if (this.isMicrophoneActive || this.streamingSessionActive) {
             micBtn.classList.add('recording');
-            micBtn.title = '停止录音';
-            icon.className = 'fas fa-microphone-slash';
+            micBtn.title = '结束语音对话';
+            micBtn.textContent = '结束语音对话';
         } else {
             micBtn.classList.remove('recording');
-            micBtn.title = '开始录音';
-            icon.className = 'fas fa-microphone';
+            micBtn.title = '开始语音对话';
+            micBtn.textContent = '开始语音对话';
         }
     }
 
@@ -1056,6 +1174,173 @@ class MuseumChatApp {
         this.recognitionTimeout = setTimeout(() => {
             this.hideVoiceRecognitionArea();
         }, 5000); // 5秒无语音输入后隐藏
+    }
+    
+    // 重置2秒静音检测定时器
+    resetSilenceTimeout() {
+        // 清除旧的定时器
+        if (this.silenceTimeout) {
+            clearTimeout(this.silenceTimeout);
+            this.silenceTimeout = null;
+        }
+        
+        // 2秒静音后自动发送识别内容
+        // 注意：即使在RAG生成期间，也要允许静音检测触发，以便用户可以打断
+        this.silenceTimeout = setTimeout(() => {
+            console.log('⏱️ [静音检测] 2秒定时器触发');
+            this.onSilenceDetected();
+        }, 2000);
+        console.log('⏱️ [静音检测] 重置2秒静音定时器，将在2秒后检查');
+    }
+    
+    // 2秒静音检测到，自动发送识别内容
+    onSilenceDetected() {
+        console.log('🔇 [静音检测] 2秒静音检测触发');
+        console.log('📊 [静音检测] 当前recognizedText:', this.recognizedText);
+        console.log('📊 [静音检测] 当前finalResults:', this.finalResults);
+        console.log('📊 [静音检测] RAG生成中:', this.isGeneratingResponse);
+        
+        const finalText = this.recognizedText && this.recognizedText.trim() 
+            ? this.recognizedText.trim() 
+            : (this.finalResults.length > 0 ? this.finalResults.join(' ') : '');
+        
+        if (!finalText) {
+            console.log('⚠️ [静音检测] 2秒静音，但没有识别内容，不发送');
+            return;
+        }
+        
+        console.log('🔇 [静音检测] 2秒静音，自动发送识别内容:', finalText);
+        
+        // 清除定时器，避免重复触发
+        if (this.silenceTimeout) {
+            clearTimeout(this.silenceTimeout);
+            this.silenceTimeout = null;
+        }
+        
+        // 如果有正在进行的响应生成，取消其TTS播放（但文字继续生成）
+        if (this.isGeneratingResponse) {
+            console.log('🛑 [打断] 检测到新语音输入，取消当前响应的TTS播放');
+            this.cancelCurrentTTS();
+        }
+        
+        // 如果有正在播放的TTS，停止播放
+        this.stopAudio();
+        
+        // 发送识别内容给RAG（即使RAG正在生成，也要发送新的请求）
+        // 这会创建一个新的请求，旧的请求会被标记为已中断
+        console.log('📤 [静音检测] 发送识别内容到RAG，即使RAG正在生成');
+        this.sendRecognizedTextToRAG(finalText);
+    }
+    
+    // 取消当前TTS任务
+    cancelCurrentTTS() {
+        // 设置标志，阻止后续TTS播放
+        this.shouldIgnoreResponse = true;
+        
+        // 取消流式TTS
+        if (this.isStreamingTTSActive) {
+            this.cancelStreamingTTS();
+        }
+        
+        // 停止音频播放
+        this.stopAudio();
+        
+        // 关闭TTS WebSocket连接
+        if (this.ttsWebSocket) {
+            try {
+                if (this.ttsWebSocket.readyState === WebSocket.OPEN || this.ttsWebSocket.readyState === WebSocket.CONNECTING) {
+                    console.log('🛑 [取消TTS] 关闭TTS WebSocket连接');
+                    this.ttsWebSocket.close();
+                }
+            } catch (e) {
+                console.error('关闭TTS连接失败:', e);
+            }
+            this.ttsWebSocket = null;
+        }
+        
+        // 生成新的请求ID，旧的TTS请求会被忽略
+        this.currentTTSRequestId = Date.now();
+    }
+    
+    // 发送识别内容给RAG（带打断机制）
+    sendRecognizedTextToRAG(text) {
+        if (!text || !text.trim()) {
+            return;
+        }
+        
+        console.log('📤 [发送RAG] 发送识别内容:', text);
+        
+        // 生成新的请求ID
+        const requestId = Date.now();
+        this.currentResponseRequestId = requestId;
+        this.isGeneratingResponse = true;
+        
+        // 标记为语音模式，以便自动播放语音回复
+        this.isVoiceMode = true;
+        console.log('🎤 [语音模式] 标记为语音输入，将自动播放语音回复');
+        
+        // 如果有正在进行的响应，取消其TTS（但允许文字继续生成）
+        if (this.isGeneratingResponse && this.currentResponseRequestId !== requestId) {
+            console.log('🛑 [打断] 取消旧响应的TTS');
+            this.cancelCurrentTTS();
+        }
+        
+        // 添加用户消息到界面
+        this.addMessage('user', text, false, true);
+        
+        // 发送到服务器（包含requestId）
+        this.socket.emit('send_message', {
+            message: text,
+            sessionId: this.socket.id,
+            requestId: requestId // 传递请求ID
+        });
+        
+        // 清空输入框
+        this.elements.messageInput.value = '';
+        this.updateCharCount();
+        
+        // 隐藏语音识别区域（但保持录音和识别继续）
+        this.hideVoiceRecognitionArea();
+        
+        // 清空识别结果，准备下次识别（但保持录音继续）
+        this.recognizedText = '';
+        this.finalResults = [];
+    }
+    
+    // 启动持续语音识别（常开模式）
+    async startContinuousRecognition() {
+        try {
+            console.log('🎤 [常开模式] 启动持续语音识别...');
+            
+            // 初始化实时语音识别连接
+            await this.initializeRealtimeSpeechRecognition();
+            
+            // 等待连接建立
+            let waitCount = 0;
+            while (this.realtimeRecognition && this.realtimeRecognition.readyState === WebSocket.CONNECTING && waitCount < 30) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                waitCount++;
+            }
+            
+            if (!this.realtimeRecognition || this.realtimeRecognition.readyState !== WebSocket.OPEN) {
+                console.error('❌ [常开模式] WebSocket连接失败');
+                return;
+            }
+            
+            // 启动流式识别
+            if (this.realtimeRecognition.readyState === WebSocket.OPEN) {
+                this.realtimeRecognition.send(JSON.stringify({ type: 'start' }));
+                console.log('🚀 [常开模式] 已发送流式识别start指令');
+                this.streamingSessionActive = true;
+            }
+            
+            // 启动持续录音（不停止）
+            await this.startMicrophone();
+            
+            console.log('✅ [常开模式] 持续语音识别已启动，将一直保持开启状态');
+        } catch (error) {
+            console.error('❌ [常开模式] 启动失败:', error);
+        }
     }
 
     sendMessage() {
@@ -1270,12 +1555,302 @@ class MuseumChatApp {
         }
     }
 
-    speakText(text) {
+    // 处理流式TTS：在RAG文字流式输出的同时进行TTS
+    handleStreamingTTS(chunk, requestId) {
+        // 如果用户已停止，不处理TTS
+        if (this.shouldIgnoreResponse) {
+            return;
+        }
+        
+        // 如果是新的请求，重置流式TTS状态
+        if (this.streamingTTSRequestId !== requestId) {
+            // 取消旧的流式TTS
+            if (this.isStreamingTTSActive) {
+                this.cancelStreamingTTS();
+            }
+            // 初始化新的流式TTS
+            this.streamingTTSRequestId = requestId;
+            this.streamingTTSBuffer = '';
+            this.isStreamingTTSActive = true;
+            this.currentTTSRequestId = requestId;
+            
+            // 停止当前正在播放的音频
+            this.stopAudio();
+            
+            // 初始化TTS WebSocket连接
+            this.initStreamingTTS();
+        }
+        
+        // 累积文本到缓冲区
+        this.streamingTTSBuffer += chunk;
+        
+        // 检查是否有完整的句子（以句号、问号、感叹号结尾）
+        const sentenceEndRegex = /[。！？\n]+/g;
+        let lastIndex = 0;
+        let match;
+        const sentences = [];
+        
+        while ((match = sentenceEndRegex.exec(this.streamingTTSBuffer)) !== null) {
+            const sentence = this.streamingTTSBuffer.substring(lastIndex, match.index + 1).trim();
+            if (sentence) {
+                sentences.push(sentence);
+            }
+            lastIndex = match.index + 1;
+        }
+        
+        // 如果有完整的句子，发送到TTS
+        if (sentences.length > 0) {
+            sentences.forEach(sentence => {
+                this.sendSentenceToTTS(sentence);
+            });
+            // 保留未完成的文本
+            this.streamingTTSBuffer = this.streamingTTSBuffer.substring(lastIndex);
+        }
+    }
+    
+    // 初始化流式TTS WebSocket连接
+    initStreamingTTS() {
+        // 如果已有连接，先关闭
+        if (this.ttsWebSocket) {
+            try {
+                this.ttsWebSocket.close();
+            } catch (e) {
+                console.error('关闭旧TTS连接失败:', e);
+            }
+            this.ttsWebSocket = null;
+        }
+        
+        this.showAudioControls();
+        this.audioQueue = [];
+        this.isPlayingQueue = false;
+        this.isQueueClosing = false;
+        this.hasStreamedTTS = false;
+        
+        console.log('🎤 [流式TTS] 初始化流式TTS连接...');
+    }
+    
+    // 发送句子到TTS进行合成（加入队列，按顺序处理）
+    sendSentenceToTTS(sentence) {
+        if (!sentence || !sentence.trim() || this.shouldIgnoreResponse) {
+            return;
+        }
+        
+        console.log('📤 [流式TTS] 句子加入队列:', sentence.substring(0, 50) + '...');
+        
+        // 将句子加入队列
+        this.streamingTTSSentenceQueue.push(sentence.trim());
+        
+        // 如果当前没有在处理，开始处理队列
+        if (!this.isProcessingTTSSentence) {
+            this.processTTSSentenceQueue();
+        }
+    }
+    
+    // 处理TTS句子队列（按顺序发送和播放）
+    async processTTSSentenceQueue() {
+        if (this.shouldIgnoreResponse || this.streamingTTSSentenceQueue.length === 0) {
+            this.isProcessingTTSSentence = false;
+            return;
+        }
+        
+        this.isProcessingTTSSentence = true;
+        const sentence = this.streamingTTSSentenceQueue.shift();
+        
+        console.log('🎤 [流式TTS] 处理句子:', sentence.substring(0, 50) + '...');
+        
+        // 如果WebSocket未连接，建立连接
+        if (!this.ttsWebSocket || this.ttsWebSocket.readyState !== WebSocket.OPEN) {
+            await this.connectTTSWebSocket();
+        }
+        
+        // 等待连接建立
+        let retries = 0;
+        while ((!this.ttsWebSocket || this.ttsWebSocket.readyState !== WebSocket.OPEN) && retries < 50) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            retries++;
+        }
+        
+        if (!this.ttsWebSocket || this.ttsWebSocket.readyState !== WebSocket.OPEN) {
+            console.error('❌ [流式TTS] WebSocket连接失败');
+            this.isProcessingTTSSentence = false;
+            // 继续处理队列
+            if (this.streamingTTSSentenceQueue.length > 0) {
+                this.processTTSSentenceQueue();
+            }
+            return;
+        }
+        
+        // 创建一个Promise来等待这个句子的TTS完成
+        const sentencePromise = new Promise((resolve) => {
+            const originalOnMessage = this.ttsWebSocket.onmessage;
+            let audioReceived = false;
+            
+            this.ttsWebSocket.onmessage = (event) => {
+                if (this.shouldIgnoreResponse) {
+                    resolve();
+                    return;
+                }
+                
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'audio') {
+                    if (data.audio && !audioReceived) {
+                        audioReceived = true;
+                        console.log('🎵 [流式TTS] 收到句子音频，加入播放队列');
+                        this.enqueueAudioChunk(data.audio);
+                    }
+                } else if (data.type === 'end') {
+                    console.log('✅ [流式TTS] 句子TTS完成');
+                    // 恢复原始onmessage处理器
+                    this.ttsWebSocket.onmessage = originalOnMessage;
+                    resolve();
+                } else if (data.type === 'error') {
+                    console.error('❌ [流式TTS] 句子TTS错误:', data.error);
+                    this.ttsWebSocket.onmessage = originalOnMessage;
+                    resolve();
+                }
+            };
+            
+            // 发送句子到TTS
+            const message = {
+                text: sentence,
+                stream: false
+            };
+            this.ttsWebSocket.send(JSON.stringify(message));
+        });
+        
+        // 等待当前句子完成后再处理下一个
+        await sentencePromise;
+        
+        // 继续处理队列中的下一个句子
+        if (this.streamingTTSSentenceQueue.length > 0 && !this.shouldIgnoreResponse) {
+            this.processTTSSentenceQueue();
+        } else {
+            this.isProcessingTTSSentence = false;
+        }
+    }
+    
+    // 连接TTS WebSocket
+    connectTTSWebSocket() {
+        return new Promise((resolve, reject) => {
+            if (this.ttsWebSocket && this.ttsWebSocket.readyState === WebSocket.OPEN) {
+                resolve(); // 已连接
+                return;
+            }
+            
+            const ttsWebSocket = new WebSocket('ws://localhost:8000/ws/tts');
+            this.ttsWebSocket = ttsWebSocket;
+            
+            ttsWebSocket.onopen = () => {
+                console.log('✅ [流式TTS] WebSocket连接已建立');
+                resolve();
+            };
+            
+            // 默认的onmessage处理器（会被processTTSSentenceQueue中的临时处理器覆盖）
+            ttsWebSocket.onmessage = (event) => {
+                if (this.shouldIgnoreResponse) {
+                    return;
+                }
+                
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'audio') {
+                    if (data.audio) {
+                        this.enqueueAudioChunk(data.audio);
+                    }
+                } else if (data.type === 'end') {
+                    console.log('🎵 [流式TTS] TTS完成');
+                } else if (data.type === 'error') {
+                    console.error('❌ [流式TTS] 错误:', data.error);
+                }
+            };
+            
+            ttsWebSocket.onerror = (error) => {
+                console.error('❌ [流式TTS] WebSocket错误:', error);
+                reject(error);
+            };
+            
+            ttsWebSocket.onclose = (event) => {
+                console.log('🔌 [流式TTS] WebSocket连接已关闭');
+                if (this.ttsWebSocket === ttsWebSocket) {
+                    this.ttsWebSocket = null;
+                }
+            };
+        });
+    }
+    
+    // 完成流式TTS：处理剩余的缓冲区文本
+    finalizeStreamingTTS() {
+        // 处理缓冲区中剩余的文本（即使没有句子结束符）
+        if (this.streamingTTSBuffer && this.streamingTTSBuffer.trim()) {
+            console.log('📤 [流式TTS] 发送剩余文本:', this.streamingTTSBuffer);
+            this.sendSentenceToTTS(this.streamingTTSBuffer.trim());
+            this.streamingTTSBuffer = '';
+        }
+        
+        // 标记流式TTS完成（但继续处理队列中的句子）
+        this.isStreamingTTSActive = false;
+        this.streamingTTSRequestId = null;
+        
+        // 等待队列播放完成后关闭连接
+        const checkAndClose = () => {
+            if (!this.isProcessingTTSSentence && 
+                this.streamingTTSSentenceQueue.length === 0 &&
+                !this.isPlayingQueue && 
+                this.audioQueue.length === 0) {
+                if (this.ttsWebSocket) {
+                    try {
+                        this.ttsWebSocket.close();
+                    } catch (e) {
+                        console.error('关闭TTS连接失败:', e);
+                    }
+                    this.ttsWebSocket = null;
+                }
+                this.hideAudioControls();
+            } else {
+                // 如果还在处理，继续等待
+                setTimeout(checkAndClose, 500);
+            }
+        };
+        setTimeout(checkAndClose, 1000);
+    }
+    
+    // 取消流式TTS
+    cancelStreamingTTS() {
+        console.log('🛑 [流式TTS] 取消流式TTS');
+        this.streamingTTSBuffer = '';
+        this.streamingTTSSentenceQueue = [];
+        this.isStreamingTTSActive = false;
+        this.isProcessingTTSSentence = false;
+        this.streamingTTSRequestId = null;
+        
+        if (this.ttsWebSocket) {
+            try {
+                this.ttsWebSocket.close();
+            } catch (e) {
+                console.error('关闭TTS连接失败:', e);
+            }
+            this.ttsWebSocket = null;
+        }
+        
+        this.stopAudio();
+    }
+
+    speakText(text, ttsRequestId = null) {
+        // 如果提供了TTS请求ID，检查是否是最新的请求
+        if (ttsRequestId && this.currentTTSRequestId && ttsRequestId !== this.currentTTSRequestId) {
+            console.log('⏭️ [忽略TTS] 收到旧请求的TTS，忽略');
+            return;
+        }
+        
         // 如果用户已停止生成，不播放语音
         if (this.shouldIgnoreResponse) {
             console.log('⏭️ [忽略] 用户已停止，不播放语音:', text.substring(0, 50) + '...');
             return;
         }
+        
+        // 停止当前正在播放的音频
+        this.stopAudio();
         
         // 使用Qwen3-TTS实时语音合成
         this.speakWithQwenTTS(text);
@@ -1283,16 +1858,11 @@ class MuseumChatApp {
 
     async speakWithQwenTTS(text) {
         try {
-            // 停止当前播放
-            if (this.currentAudio) {
-                this.stopAudio();
-            }
-
-            // 确保前一个TTS WebSocket连接完全关闭
+            // 确保前一个TTS WebSocket连接完全关闭（停止旧的TTS）
             if (this.ttsWebSocket) {
                 const oldSocket = this.ttsWebSocket;
                 if (oldSocket.readyState === WebSocket.OPEN || oldSocket.readyState === WebSocket.CONNECTING) {
-                    console.log('🔄 [TTS] 关闭前一个WebSocket连接...');
+                    console.log('🔄 [TTS] 关闭前一个WebSocket连接（停止旧的TTS）...');
                     oldSocket.close();
                     // 等待连接关闭
                     await new Promise((resolve) => {

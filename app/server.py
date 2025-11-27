@@ -71,6 +71,8 @@ retriever = None
 voice_interface = None
 active_connections: Dict[str, WebSocket] = {}
 user_sessions: Dict[str, Dict] = {}
+# 会话状态管理：用于支持中断机制
+session_states: Dict[str, Dict] = {}  # session_id -> {current_request_id, is_interrupted, tts_request_id}
 
 # 从环境变量读取API Key
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
@@ -143,13 +145,16 @@ def create_voice_interface() -> VoiceInterface:
         return None
 
 
-async def stream_response(question: str, chat_history: List[Dict], websocket: WebSocket, auto_tts: bool = False):
+async def stream_response(question: str, chat_history: List[Dict], websocket: WebSocket, 
+                         auto_tts: bool = False, request_id: Optional[str] = None, 
+                         session_id: Optional[str] = None):
     """流式响应生成 - 使用与multimodal_rag.py相同的流程"""
     try:
-        # 发送开始信号
+        # 发送开始信号（包含request_id）
         await websocket.send_text(json.dumps({
             "type": "response_start",
-            "message": "开始生成回答..."
+            "message": "开始生成回答...",
+            "requestId": request_id
         }))
         
         if not rag_chain or not retriever:
@@ -187,13 +192,21 @@ async def stream_response(question: str, chat_history: List[Dict], websocket: We
             "question": question, 
             "chat_history": format_chat_history(chat_history)
         }):
+            # 检查是否被中断（新请求到达）
+            if session_id and session_states.get(session_id):
+                if session_states[session_id]["is_interrupted"] or \
+                   (request_id and session_states[session_id]["current_request_id"] != request_id):
+                    logger.info(f"[{session_id}] 检测到中断，停止发送后续chunk（但文字已生成）")
+                    break  # 停止发送，但文字继续生成
+            
             if chunk:
                 response_text += chunk
                 chunk_count += 1
                 await websocket.send_text(json.dumps({
                     "type": "response_chunk",
                     "content": chunk,
-                    "isFirst": first_chunk
+                    "isFirst": first_chunk,
+                    "requestId": request_id
                 }))
                 first_chunk = False
         
@@ -209,13 +222,22 @@ async def stream_response(question: str, chat_history: List[Dict], websocket: We
             locator = f"page {page}" if page is not None else f"chunk {chunk_id}"
             sources.append({"source": source, "locator": locator})
         
-        # 发送结束信号
+        # 检查是否被中断，如果被中断则不发送TTS
+        should_play_tts = auto_tts
+        if session_id and session_states.get(session_id):
+            if session_states[session_id]["is_interrupted"] or \
+               (request_id and session_states[session_id]["current_request_id"] != request_id):
+                logger.info(f"[{session_id}] 响应被中断，不播放TTS")
+                should_play_tts = False
+        
+        # 发送结束信号（包含request_id）
         await websocket.send_text(json.dumps({
             "type": "response_end",
             "fullResponse": response_text,
             "timestamp": datetime.now().isoformat(),
             "sources": sources,
-            "autoTTS": auto_tts  # 告诉前端是否需要自动播放语音
+            "autoTTS": should_play_tts,  # 告诉前端是否需要自动播放语音
+            "requestId": request_id
         }))
         
     except Exception as e:
@@ -281,6 +303,12 @@ async def websocket_endpoint(websocket: WebSocket):
         "chat_history": [],
         "created_at": datetime.now()
     }
+    # 初始化会话状态
+    session_states[session_id] = {
+        "current_request_id": None,
+        "is_interrupted": False,
+        "tts_request_id": None
+    }
     
     logger.info(f"新WebSocket连接: {session_id}")
     
@@ -293,7 +321,20 @@ async def websocket_endpoint(websocket: WebSocket):
             if message["type"] == "send_message":
                 # 兼容前端发送的消息格式
                 question = message.get("question", "") or message.get("message", "")
+                request_id = message.get("requestId")  # 获取请求ID
                 chat_history = user_sessions[session_id]["chat_history"]
+                
+                # 如果有新的请求，取消旧的请求的TTS
+                if request_id and session_states[session_id]["current_request_id"]:
+                    old_request_id = session_states[session_id]["current_request_id"]
+                    if old_request_id != request_id:
+                        logger.info(f"[{session_id}] 检测到新请求 {request_id}，取消旧请求 {old_request_id} 的TTS")
+                        session_states[session_id]["is_interrupted"] = True
+                        session_states[session_id]["tts_request_id"] = None
+                
+                # 更新会话状态
+                session_states[session_id]["current_request_id"] = request_id
+                session_states[session_id]["is_interrupted"] = False
                 
                 # 添加用户消息到历史记录
                 user_sessions[session_id]["chat_history"].append({
@@ -302,8 +343,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "timestamp": datetime.now().isoformat()
                 })
                 
-                # 生成流式响应（文本输入，不自动播放语音）
-                await stream_response(question, chat_history, websocket, auto_tts=False)
+                # 生成流式响应（传递request_id和session_id用于中断检测）
+                await stream_response(question, chat_history, websocket, auto_tts=True, 
+                                    request_id=request_id, session_id=session_id)
                 
             elif message["type"] == "send_audio":
                 # 处理语音消息 - 使用Paraformer
@@ -355,6 +397,8 @@ async def websocket_endpoint(websocket: WebSocket):
             del active_connections[session_id]
         if session_id in user_sessions:
             del user_sessions[session_id]
+        if session_id in session_states:
+            del session_states[session_id]
 
 
 @app.websocket("/ws/realtime-speech")
