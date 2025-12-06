@@ -371,12 +371,12 @@ class MuseumChatApp {
                 return true;
             }
             
-            // 建立WebSocket连接 - 使用Gummy实时语音识别
+            // 建立WebSocket连接 - 使用本地实时语音识别
             console.log('正在建立WebSocket连接...');
             this.realtimeRecognition = new WebSocket('ws://localhost:8000/ws/realtime-speech');
             
             this.realtimeRecognition.onopen = () => {
-                console.log('✅ 实时语音识别连接已建立 (Gummy实时模型)');
+                console.log('✅ 实时语音识别连接已建立 (本地FunASR模型)');
                 // 仅建立连接，不自动启动流式识别，等用户真正开始录音时再发送start
                 this.streamingSessionActive = false;
             };
@@ -430,7 +430,7 @@ class MuseumChatApp {
                 this.audioStream.getTracks().forEach(track => track.stop());
             }
             
-            // 获取麦克风权限 - 使用16kHz采样率匹配gummy-realtime-v1
+            // 获取麦克风权限 - 使用16kHz采样率匹配本地Paraformer
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     sampleRate: 16000,  // 16kHz采样率
@@ -2559,7 +2559,7 @@ class MuseumChatApp {
                     const arrayBuffer = e.target.result;
                     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                     
-                    // 重采样到16kHz以匹配gummy-realtime-v1
+                    // 重采样到16kHz以匹配本地Paraformer
                     const resampledBuffer = await this.resampleAudioBuffer(audioContext, audioBuffer, 16000);
                     
                     // 转换为WAV格式
@@ -2593,7 +2593,7 @@ class MuseumChatApp {
 
     audioBufferToWav(buffer) {
         const length = buffer.length;
-        const sampleRate = 16000; // 16kHz采样率，匹配gummy-realtime-v1
+        const sampleRate = 16000; // 16kHz采样率，匹配本地Paraformer
         const arrayBuffer = new ArrayBuffer(44 + length * 2);
         const view = new DataView(arrayBuffer);
         

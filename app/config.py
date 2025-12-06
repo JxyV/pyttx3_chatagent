@@ -51,8 +51,8 @@ class RAGConfig:
             "record_duration": 5,  # 录音时长(秒)
             
             # STT配置
-            "stt_backend": "whisper",  # whisper | gummy | speech_recognition
-            "stt_model": "base",  # STT模型大小
+            "stt_backend": "funasr",  # funasr | whisper | speech_recognition
+            "stt_model": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
             
             # TTS配置
             "tts_backend": "edge",  # edge | pyttsx3

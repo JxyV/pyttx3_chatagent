@@ -95,7 +95,7 @@ if __name__ == "__main__":
         print("   2. 点击「语音模式」按钮启用语音交互")
         print("   3. 直接说话，系统会实时识别并自动回答")
         print()
-        print("⚠️  确保已在.env文件中配置DASHSCOPE_API_KEY")
+        print("⚠️  提示：默认使用本地 FunASR STT（16kHz，device=cuda:0，可改cpu）")
         print()
         print("按 Ctrl+C 停止所有服务")
         print("=" * 60)

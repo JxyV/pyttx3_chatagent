@@ -15,21 +15,10 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from app.rag.chain import build_chain
-from app.services.voice import VoiceInterface, GummyRealtimeSTT, Qwen3TTSRealtime
+from app.services.voice import VoiceInterface, IicRealtimeSTT
 
 # 加载环境变量
 load_dotenv()
-
-# 检查API Key
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-if not DASHSCOPE_API_KEY:
-    print("⚠️ 警告: DASHSCOPE_API_KEY环境变量未设置")
-    print("请在系统环境变量中配置API Key:")
-    print("  Windows: setx DASHSCOPE_API_KEY \"your_api_key\"")
-    print("  Linux/Mac: export DASHSCOPE_API_KEY=\"your_api_key\"")
-    print()
-else:
-    print(f"✅ DASHSCOPE_API_KEY已加载: {DASHSCOPE_API_KEY[:10]}...")
 
 class MultimodalRAG:
     """多模态RAG系统"""
@@ -59,20 +48,10 @@ class MultimodalRAG:
         logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(message)s")
     
     def _create_voice_interface(self) -> VoiceInterface:
-        """创建语音接口 - 使用Gummy实时语音识别"""
-        
-        api_key = os.getenv("DASHSCOPE_API_KEY")
-        if not api_key:
-            raise ValueError("DASHSCOPE_API_KEY环境变量未设置，无法初始化语音系统")
-        
-        # 使用GummyRealtimeSTT和Qwen3TTSRealtime
-        stt = GummyRealtimeSTT(api_key=api_key, model="gummy-realtime-v1")
-        tts = Qwen3TTSRealtime(api_key=api_key)
-        
-        # 默认使用芊悦音色，程序员可以修改
+        """创建语音接口 - 使用本地 FunASR STT"""
+        stt = IicRealtimeSTT()
         voice = os.getenv("TTS_VOICE", "Cherry")
-        
-        return VoiceInterface(stt_model=stt, tts_model=tts, voice=voice)
+        return VoiceInterface(stt_model=stt, tts_model=None, voice=voice)
     
     def get_user_input(self) -> str:
         """获取用户输入（支持文本和语音）"""

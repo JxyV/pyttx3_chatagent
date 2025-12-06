@@ -1,4 +1,4 @@
-"""使用 gummy-realtime-v1 对本地 PCM 文件进行实时识别示例"""
+"""使用本地 FunASR Paraformer 对本地 PCM 文件进行实时识别示例"""
 
 import argparse
 import logging
@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.services.stt_client import GummyRealtimeSTT
+from app.services.voice import IicRealtimeSTT
 
 
 def setup_logging() -> None:
@@ -21,18 +21,13 @@ def setup_logging() -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="gummy-realtime-v1 实时识别示例（本地 PCM 文件）")
+    parser = argparse.ArgumentParser(description="本地 Paraformer 实时识别示例（PCM16/16k 单声道）")
     parser.add_argument("--audio", default="./your_audio_file.pcm", help="PCM16/16k 单声道音频路径")
-    parser.add_argument("--model", default="gummy-realtime-v1", help="识别模型名称")
+    parser.add_argument("--model", default="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online", help="FunASR模型ID")
+    parser.add_argument("--device", default="cuda:0", help="运行设备，例如 cuda:0 或 cpu")
     args = parser.parse_args()
 
     setup_logging()
-
-    # 检查API Key
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
-        print("❌ 错误: 请设置环境变量 DASHSCOPE_API_KEY")
-        sys.exit(1)
 
     audio_path = Path(args.audio)
     if not audio_path.exists():
@@ -45,8 +40,9 @@ def main():
     print()
 
     try:
-        stt = GummyRealtimeSTT(api_key=api_key, model=args.model)
-        result = stt.transcribe(audio_path)
+        stt = IicRealtimeSTT(model_id=args.model, device=args.device)
+        audio_bytes = audio_path.read_bytes()
+        result = stt.transcribe(audio_bytes)
         
         print()
         print("=" * 50)

@@ -73,34 +73,25 @@ def generate_minimal_config() -> str:
 # 语音识别配置
 STT_TYPE=paraformer
 PARAFORMER_STREAMING=true
-PARAFORMER_MODEL=damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+PARAFORMER_MODEL=iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online
 
 # 日志配置
 LOG_LEVEL=INFO
 
 # 注意：此配置不包含 TTS，无法使用语音合成功能
-# 如需 TTS，请添加 DASHSCOPE_API_KEY 并设置 TTS_MODEL
+# 如需 TTS，可在 .env 中配置 TTS_RATE/TTS_VOLUME/TTS_VOICE_ID
 """
 
 
 def generate_standard_config() -> str:
-    """生成标准配置（需要用户输入 API Key）"""
+    """生成标准配置（本地 STT + 本地 TTS）"""
     print("📝 标准配置模式")
     print("   - ✅ 本地 Paraformer 语音识别（免费）")
     print("   - ✅ 实时流式识别")
-    print("   - ✅ 阿里云 TTS 语音合成（需要 API Key）")
+    print("   - ✅ 本地 pyttsx3 语音合成")
     print()
-    
-    # 询问 API Key
-    api_key = input("请输入阿里云 DashScope API Key（按回车跳过）: ").strip()
-    print()
-    
-    if not api_key:
-        print("⚠️  未输入 API Key，将使用占位符")
-        print("   请稍后编辑 .env 文件添加真实的 API Key")
-        api_key = "your_dashscope_api_key_here"
-    
-    # 询问 TTS 音色
+
+    # 询问 TTS 音色（仅用于显示）
     print("请选择 TTS 音色：")
     voices = {
         "1": ("Cherry", "芊悦（女，标准普通话）"),
@@ -108,27 +99,25 @@ def generate_standard_config() -> str:
         "3": ("Nofish", "不吃鱼（女，活泼）"),
         "4": ("Jennifer", "詹妮弗（女，英语）"),
     }
-    
+
     for key, (name, desc) in voices.items():
         print(f"{key}. {name} - {desc}")
-    
+
     voice_choice = input("\n请选择 (1-4，按回车使用默认): ").strip() or "1"
     voice_name = voices.get(voice_choice, ("Cherry", "芊悦"))[0]
     print()
-    
-    return f"""# ==================== 标准配置（本地 STT + 云端 TTS） ====================
 
-# 阿里云 API 配置
-DASHSCOPE_API_KEY={api_key}
+    return f"""# ==================== 标准配置（本地 STT + 本地 TTS） ====================
 
 # 语音识别配置（本地模型）
 STT_TYPE=paraformer
 PARAFORMER_STREAMING=true
-PARAFORMER_MODEL=damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+PARAFORMER_MODEL=iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online
 
-# 语音合成配置（阿里云）
-TTS_MODEL=cosyvoice-v1
+# 语音合成配置（本地）
 TTS_VOICE={voice_name}
+TTS_RATE=150
+TTS_VOLUME=0.8
 
 # 日志配置
 LOG_LEVEL=INFO
@@ -142,21 +131,12 @@ def generate_full_config() -> str:
     
     config = {}
     
-    # API Key
-    config['DASHSCOPE_API_KEY'] = input(
-        "阿里云 DashScope API Key（按回车跳过）: "
-    ).strip() or "your_dashscope_api_key_here"
-    
-    # STT 配置
+    # STT 配置 - 仅提供本地 Paraformer
     print("\n语音识别配置：")
     print("1. paraformer（本地，免费）")
-    print("2. gummy（阿里云，需要 API Key）")
-    stt_choice = input("选择 STT 类型 (1-2): ").strip()
-    config['STT_TYPE'] = "paraformer" if stt_choice == "1" else "gummy"
-    
-    if config['STT_TYPE'] == "paraformer":
-        streaming = input("启用流式识别? (y/n): ").strip().lower()
-        config['PARAFORMER_STREAMING'] = "true" if streaming == "y" else "false"
+    config['STT_TYPE'] = "paraformer"
+    streaming = input("启用流式识别? (y/n): ").strip().lower()
+    config['PARAFORMER_STREAMING'] = "true" if streaming == "y" else "false"
     
     # TTS 配置
     print("\nTTS 音色（可选: Cherry, Ethan, Nofish, Jennifer）:")
@@ -171,17 +151,15 @@ def generate_full_config() -> str:
     # 生成配置文本
     return f"""# ==================== 完整配置 ====================
 
-# 阿里云 API 配置
-DASHSCOPE_API_KEY={config['DASHSCOPE_API_KEY']}
+# 语音识别配置（本地 FunASR）
+STT_TYPE=paraformer
+PARAFORMER_STREAMING={config.get('PARAFORMER_STREAMING', 'true')}
+PARAFORMER_MODEL=iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online
 
-# 语音识别配置
-STT_TYPE={config['STT_TYPE']}
-{'PARAFORMER_STREAMING=' + config.get('PARAFORMER_STREAMING', 'true') if config['STT_TYPE'] == 'paraformer' else '# PARAFORMER_STREAMING=true'}
-PARAFORMER_MODEL=damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch
-
-# 语音合成配置
-TTS_MODEL=cosyvoice-v1
+# 语音合成配置（本地 pyttsx3）
 TTS_VOICE={config['TTS_VOICE']}
+TTS_RATE=150
+TTS_VOLUME=0.8
 
 # Ollama 配置
 OLLAMA_BASE_URL=http://localhost:11434

@@ -16,24 +16,12 @@
 
 ## ⚠️ 重要更新
 
-### 🎙️ 最新: 阿里云API语音识别集成（2025-10-20）
+### 🎙️ 最新: 本地 FunASR Paraformer STT（2025-12-05）
 
-前端项目已成功集成阿里云DashScope的paraformer-realtime-8k-v2 API！
-
-- ✅ **高准确率**: 使用最新的Paraformer V2模型
-- ✅ **稳定可靠**: 阿里云提供的企业级服务
-- ✅ **8kHz优化**: 专门针对8kHz音频优化
-- ✅ **易于维护**: 无需本地模型管理
-- 📚 **详细文档**: [阿里云API集成说明](ALIYUN_API_INTEGRATION.md)
-
-**快速启动**:
-```bash
-# 1. 设置API Key
-export DASHSCOPE_API_KEY="your_api_key"
-
-# 2. 启动系统
-python start_paraformer_frontend.py
-```
+- ✅ **本地部署**: 默认使用 IIC Paraformer Online 模型 `iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online`
+- ✅ **低延迟流式**: 支持 16kHz 单声道 PCM，提供一次性与流式转写
+- ✅ **无云依赖**: 不再需要 DashScope/Gummy API Key，全部在本地 GPU/CPU 运行
+- 🔧 **运行设备**: 默认 `cuda:0`，无 GPU 可改为 `cpu`
 
 ### 🗄️ 已迁移到Milvus Lite
 
@@ -72,11 +60,9 @@ npm install
 cd ..
 ```
 
-### 2. 配置API Key
-```bash
-# 设置环境变量
-export DASHSCOPE_API_KEY="your_api_key_here"
-```
+### 2. （可选）配置环境变量
+- 本地 STT 已默认启用，无需 API Key
+- 可通过 `.env` 配置 TTS 语速/音量等参数（如 `TTS_RATE`、`TTS_VOLUME`、`TTS_VOICE_ID`）
 
 ### 3. 导入知识库
 ```bash
@@ -122,8 +108,8 @@ cd web && node server.js  # 前端
 - **向量数据库**: Milvus Lite (已从Chroma迁移)
 - **嵌入模型**: sentence-transformers
 - **大语言模型**: Ollama (本地) 或 OpenAI
-- **语音识别**: 阿里云DashScope Gummy STT
-- **语音合成**: 阿里云DashScope Qwen3 TTS
+- **语音识别**: 本地 FunASR Paraformer (IIC)
+- **语音合成**: 本地 pyttsx3 TTS（可替换其他方案）
 - **前端框架**: 原生JavaScript + WebSocket
 - **后端框架**: FastAPI + WebSocket
 
@@ -135,9 +121,7 @@ cd web && node server.js  # 前端
   - Ollama: set `LLM_BACKEND=ollama` and `OLLAMA_MODEL` (e.g., `qwen2.5:7b`, `llama3.1:8b-instruct`)
   - OpenAI: set `LLM_BACKEND=openai` and `OPENAI_API_KEY`
 - STT Models:
-  - Whisper: `STT_BACKEND=whisper`, `STT_MODEL=base`
-  - SpeechRecognition: `STT_BACKEND=speech_recognition`, `STT_ENGINE=google`
-  - **阿里云Gummy**: `STT_BACKEND=gummy`, `DASHSCOPE_API_KEY=your-key`
+  - **默认**: IIC FunASR Paraformer Online `iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online`（16kHz，device=cuda:0，可改cpu）
 
 ### Ollama Notes
 - Install Ollama: see `https://ollama.ai/`
@@ -174,31 +158,6 @@ ollama pull bge-m3
   - Modify `.env` only; code reads configuration dynamically.
 - PDF page numbers?
   - Citations include `filename` and `page` when available; otherwise the `chunk_id`.
-
-### 阿里云Gummy STT配置
-
-1. **获取API Key**：
-   - 访问[阿里云百炼平台](https://help.aliyun.com/zh/model-studio/sentence-python-sdk)
-   - 开通服务并获取API Key
-
-2. **配置环境变量**：
-```bash
-# 在 .env 文件中添加
-STT_BACKEND=gummy
-DASHSCOPE_API_KEY=your-dashscope-api-key-here
-STT_MODEL=gummy-chat-v1
-```
-
-3. **安装依赖**：
-```bash
-pip install dashscope>=1.14.0
-```
-
-4. **使用Gummy STT**：
-```bash
-python multimodal_rag.py
-# 选择语音输入，将使用阿里云Gummy进行识别
-```
 
 ### 自定义Chroma数据库名称
 

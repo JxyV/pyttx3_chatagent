@@ -3,6 +3,7 @@
 WebSocket服务器 - 支持流式输出的RAG聊天服务
 """
 import asyncio
+import time
 import json
 import logging
 import os
@@ -20,8 +21,7 @@ from app.rag.chain import build_chain, load_retriever, answer_question
 from app.config import get_rag_config
 import wave
 import io
-from app.services.voice import VoiceInterface, GummyRealtimeSTT
-# from app.services.voice import Qwen3TTSRealtime  # 【已注释保留】DashScope API TTS
+from app.services.voice import VoiceInterface, IicRealtimeSTT
 
 
 # 配置日志
@@ -74,16 +74,6 @@ user_sessions: Dict[str, Dict] = {}
 # 会话状态管理：用于支持中断机制
 session_states: Dict[str, Dict] = {}  # session_id -> {current_request_id, is_interrupted, tts_request_id}
 
-# 从环境变量读取API Key
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-if not DASHSCOPE_API_KEY:
-    logger.warning("⚠️ DASHSCOPE_API_KEY环境变量未设置，请在系统环境变量中配置")
-    logger.warning("Windows: setx DASHSCOPE_API_KEY \"your_api_key\"")
-    logger.warning("Linux/Mac: export DASHSCOPE_API_KEY=\"your_api_key\"")
-else:
-    logger.info(f"✅ DASHSCOPE_API_KEY已加载: {DASHSCOPE_API_KEY[:10]}...")
-
-
 class ChatMessage(BaseModel):
     question: str
     chat_history: Optional[List[Dict]] = []
@@ -115,28 +105,17 @@ def initialize_rag_system():
 
 
 def create_voice_interface() -> VoiceInterface:
-    """创建语音接口 - 使用Gummy实时语音识别"""
+    """创建语音接口 - 使用本地 FunASR Paraformer"""
     try:
-        api_key = os.getenv("DASHSCOPE_API_KEY")
-        if not api_key:
-            logger.error("DASHSCOPE_API_KEY环境变量未设置，无法初始化语音接口")
-            return None
-        
-        # 使用GummyRealtimeSTT和Pyttsx3TTS（本地TTS）
-        # GummyRealtimeSTT现在内部使用stt_client实现
-        stt = GummyRealtimeSTT(api_key=api_key, model="gummy-realtime-v1")
-        # tts = Qwen3TTSRealtime(api_key=api_key)  # 【已注释保留】DashScope API TTS
         voice = os.getenv("TTS_VOICE", "Cherry")
-        
-        # VoiceInterface 现在默认使用 Pyttsx3TTS（本地TTS）
+        stt = IicRealtimeSTT()
         voice_interface = VoiceInterface(stt_model=stt, tts_model=None, voice=voice)
-        
-        # 检查实际创建的STT类型
+
         stt_type = type(voice_interface.stt).__name__
-        logger.info(f"✅ 语音接口初始化成功")
-        logger.info(f"   实际STT类型: {stt_type}")
-        logger.info(f"   STT模型: {getattr(voice_interface.stt, 'model', 'unknown')}")
-        
+        logger.info("✅ 语音接口初始化成功")
+        logger.info("   实际STT类型: %s", stt_type)
+        logger.info("   STT模型: %s", getattr(voice_interface.stt, 'model', 'iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online'))
+
         return voice_interface
     except Exception as e:
         logger.error(f"语音接口创建失败: {e}", exc_info=True)
@@ -248,8 +227,8 @@ async def stream_response(question: str, chat_history: List[Dict], websocket: We
         }))
 
 
-async def transcribe_audio_with_gummy(audio_data: str) -> str:
-    """使用Gummy进行语音转文字"""
+async def transcribe_audio_local(audio_data: str) -> str:
+    """使用本地 STT 进行语音转文字"""
     try:
         if not voice_interface:
             return "语音系统未初始化"
@@ -258,13 +237,12 @@ async def transcribe_audio_with_gummy(audio_data: str) -> str:
         import base64
         audio_bytes = base64.b64decode(audio_data)
         
-        # 使用Gummy进行转录
         transcribed_text = voice_interface.stt.transcribe(audio_bytes)
         
         return transcribed_text if transcribed_text else "未识别到语音内容"
         
     except Exception as e:
-        logger.error(f"Gummy转录错误: {e}")
+        logger.error(f"语音转写错误: {e}")
         return f"语音识别失败: {str(e)}"
 
 
@@ -348,14 +326,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                     request_id=request_id, session_id=session_id)
                 
             elif message["type"] == "send_audio":
-                # 处理语音消息 - 使用Paraformer
+                # 处理语音消息 - 使用本地 Paraformer
                 audio_data = message.get("audio_data", "")
                 logger.info(f"收到语音消息: {len(audio_data)} 字节")
                 
                 if voice_interface:
                     try:
-                        # 使用Gummy进行语音转文字
-                        transcribed_text = await transcribe_audio_with_gummy(audio_data)
+                        transcribed_text = await transcribe_audio_local(audio_data)
                         
                         await websocket.send_text(json.dumps({
                             "type": "transcription",
@@ -403,7 +380,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/realtime-speech")
 async def realtime_speech_endpoint(websocket: WebSocket):
-    """实时语音识别WebSocket端点 - 使用Gummy流式识别"""
+    """实时语音识别WebSocket端点 - 使用本地 FunASR 流式识别"""
     await websocket.accept()
     client_id = f"realtime_speech_{id(websocket)}"
     logger.info(f"[{client_id}] 实时语音识别客户端连接")
@@ -430,18 +407,39 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                             'error': '语音识别服务未初始化'
                         }))
                         continue
+
+                    # 为此客户端创建独立的流式识别实例
+                    stt_instance = IicRealtimeSTT()
                     
-                    if not isinstance(voice_interface.stt, GummyRealtimeSTT):
-                        await websocket.send_text(json.dumps({
-                            'type': 'error',
-                            'error': '需要GummyRealtimeSTT进行流式识别'
-                        }))
-                        continue
-                    
-                    # 创建新的STT实例用于此客户端
-                    api_key = os.getenv("DASHSCOPE_API_KEY")
-                    stt_instance = GummyRealtimeSTT(api_key=api_key, model="gummy-realtime-v1")
-                    
+                    # 定义合并流式文本的函数
+                    def merge_stream_text(full_text: str, last_text: str, new_text: str):
+                        """
+                        用“最长公共前缀”把 new_text 合并到 full_text
+                        """
+                        if not last_text:
+                            # 第一次直接追加
+                            return full_text + new_text, new_text
+
+                        # 计算 last_text 和 new_text 的最长公共前缀长度
+                        prefix_len = 0
+                        for a, b in zip(last_text, new_text):
+                            if a == b:
+                                prefix_len += 1
+                            else:
+                                break
+
+                        append_part = new_text[prefix_len:]
+                        full_text = full_text + append_part
+                        last_text = new_text
+                        return full_text, last_text
+
+                    # 维护当前识别状态
+                    state = {
+                        "full_text": "",
+                        "last_text": "",
+                        "last_recog_time": None
+                    }
+
                     # 定义结果回调（同步函数，使用队列传递结果）
                     result_queue = asyncio.Queue()
                     
@@ -481,43 +479,79 @@ async def realtime_speech_endpoint(websocket: WebSocket):
                     # 启动任务处理识别结果队列
                     async def process_results():
                         logger.info(f"[{client_id}] 开始处理识别结果队列")
-                        # 使用一个标志来控制循环，即使streaming_started变为False，也要处理完队列中的结果
                         should_continue = True
+                        
+                        # VAD 超时时间 (秒)
+                        SILENCE_TIMEOUT = 2.0
+                        
                         while should_continue:
                             try:
-                                # 增加超时时间，确保即使streaming_started变为False，也能处理完队列中的结果
-                                result = await asyncio.wait_for(result_queue.get(), timeout=1.0)
-                                logger.info(f"[{client_id}] 从队列获取识别结果: type={result.get('type')}, text={result.get('text', '')[:50]}")
+                                # 使用较短的 timeout 以便定期检查 VAD
+                                result = await asyncio.wait_for(result_queue.get(), timeout=0.5)
                                 
-                                # 发送识别结果到前端（使用安全的发送方法）
+                                # 收到新结果，更新状态
+                                new_text = result.get('text', '')
+                                state['full_text'], state['last_text'] = merge_stream_text(
+                                    state['full_text'], state['last_text'], new_text
+                                )
+                                state['last_recog_time'] = time.time()
+                                
+                                logger.info(f"[{client_id}] 合并后文本: {state['full_text'][:50]}...")
+                                
+                                # 发送合并后的完整文本给前端 (interim)
                                 try:
-                                    await websocket.send_text(json.dumps(result))
-                                    logger.info(f"[{client_id}] ✅ 识别结果已发送到前端: {result.get('text', '')[:50]}")
+                                    await websocket.send_text(json.dumps({
+                                        'type': 'interim',  # 始终作为中间结果发送，由VAD决定何时发送final
+                                        'text': state['full_text']
+                                    }))
+                                    logger.info(f"[{client_id}] ✅ 识别结果已发送到前端")
                                 except Exception as send_error:
-                                    logger.warning(f"[{client_id}] 发送识别结果到前端失败（可能WebSocket已关闭）: {send_error}")
-                                    # 如果WebSocket已关闭，停止处理
+                                    logger.warning(f"[{client_id}] 发送识别结果失败: {send_error}")
                                     should_continue = False
                                     break
                                     
                             except asyncio.TimeoutError:
-                                # 超时时检查是否应该继续
-                                if not streaming_started:
-                                    # 再等待一小段时间，确保所有结果都已放入队列
-                                    await asyncio.sleep(0.5)
-                                    # 尝试再获取一次结果
+                                # 超时检查 VAD
+                                if (
+                                    streaming_started 
+                                    and state['full_text'] 
+                                    and state['last_recog_time'] 
+                                    and (time.time() - state['last_recog_time']) >= SILENCE_TIMEOUT
+                                ):
+                                    logger.info(f"[{client_id}] VAD 触发：静默 {SILENCE_TIMEOUT}s，强制断句")
+                                    
+                                    # 1. 强制模型结束当前句
+                                    if stt_instance:
+                                        final_part = stt_instance.force_final_and_reset()
+                                        if final_part:
+                                            state['full_text'], state['last_text'] = merge_stream_text(
+                                                state['full_text'], state['last_text'], final_part
+                                            )
+                                    
+                                    # 2. 发送 final 结果给前端
                                     try:
-                                        result = await asyncio.wait_for(result_queue.get(), timeout=0.1)
-                                        logger.info(f"[{client_id}] 延迟获取到识别结果: {result.get('text', '')[:50]}")
-                                        await websocket.send_text(json.dumps(result))
-                                        logger.info(f"[{client_id}] ✅ 延迟发送识别结果到前端")
-                                    except (asyncio.TimeoutError, Exception):
-                                        # 没有更多结果了，退出循环
+                                        await websocket.send_text(json.dumps({
+                                            'type': 'final',
+                                            'text': state['full_text']
+                                        }))
+                                        logger.info(f"[{client_id}] ✅ VAD Final 发送完成: {state['full_text'][:50]}")
+                                    except Exception as e:
+                                        logger.warning(f"[{client_id}] VAD 发送失败: {e}")
                                         should_continue = False
                                         break
-                                continue
+                                        
+                                    # 3. 重置合并状态
+                                    state['full_text'] = ""
+                                    state['last_text'] = ""
+                                    state['last_recog_time'] = None
+                                
+                                # 检查是否停止流式识别
+                                if not streaming_started and result_queue.empty():
+                                    should_continue = False
+                                    break
+                                    
                             except Exception as e:
                                 logger.error(f"[{client_id}] 处理识别结果失败: {e}", exc_info=True)
-                                # 检查是否是WebSocket关闭错误
                                 error_str = str(e).lower()
                                 if "websocket" in error_str or "connection" in error_str or "close" in error_str:
                                     should_continue = False
