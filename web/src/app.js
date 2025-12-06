@@ -25,6 +25,7 @@ class MuseumChatApp {
         this.audioSendInterval = 100; // 最小发送间隔100ms，符合官方建议
         this.streamingSessionActive = false;
         this.waitingForFinalResult = false; // 标志：是否已停止录音，等待识别结果
+        this.hasSentCurrentRecognition = false; // 标志：当前识别会话是否已发送，防止重复发送
         this.audioQueue = [];
         this.isPlayingQueue = false;
         this.isQueueClosing = false;
@@ -665,6 +666,11 @@ class MuseumChatApp {
                 // 无论RAG是否正在生成，都要显示识别结果
                 console.log('📝 [DEBUG] 中间识别结果:', data.text, 'RAG生成中:', this.isGeneratingResponse);
                 if (data.text && data.text.trim()) {
+                    // 检查当前识别会话是否已发送过，如果已发送则忽略后续识别结果
+                    if (this.hasSentCurrentRecognition) {
+                        console.log('⏭️ [忽略] 当前识别会话已发送，忽略新的interim结果');
+                        return;
+                    }
                     this.recognizedText = data.text;
                     // 更新黄色框框显示（确保显示区域可见）
                     this.updateVoiceRecognitionDisplay(this.recognizedText, false);
@@ -681,8 +687,14 @@ class MuseumChatApp {
             case 'final':
                 // 最终识别结果
                 // 无论RAG是否正在生成，都要处理并显示识别结果
-                console.log('✅ [DEBUG] 最终识别结果:', data.text, 'RAG生成中:', this.isGeneratingResponse);
+                console.log('✅ [DEBUG] 最终识别结果:', data.text, 'RAG生成中:', this.isGeneratingResponse, '已发送:', this.hasSentCurrentRecognition);
                 if (data.text && data.text.trim()) {
+                    // 检查当前识别会话是否已发送过，如果已发送则忽略后续识别结果
+                    if (this.hasSentCurrentRecognition) {
+                        console.log('⏭️ [忽略] 当前识别会话已发送，忽略新的final结果');
+                        return;
+                    }
+                    
                     const finalText = data.text.trim();
                     
                     // 检查这个final结果是否已经包含了之前累积的所有结果
@@ -716,10 +728,15 @@ class MuseumChatApp {
                     this.updateCharCount();
                     
                     // 重置2秒静音检测定时器（final结果后启动2秒定时器）
-                    // 即使在RAG生成期间，也要重置定时器，以便用户可以打断
-                    this.lastRecognitionTime = Date.now();
-                    this.resetSilenceTimeout();
-                    console.log('⏱️ [静音检测] final结果后启动2秒静音定时器，文本:', this.recognizedText.substring(0, 50), 'RAG生成中:', this.isGeneratingResponse);
+                    // 但如果当前会话已经发送过，就不要再启动定时器，避免重复发送
+                    if (!this.hasSentCurrentRecognition) {
+                        // 即使在RAG生成期间，也要重置定时器，以便用户可以打断
+                        this.lastRecognitionTime = Date.now();
+                        this.resetSilenceTimeout();
+                        console.log('⏱️ [静音检测] final结果后启动2秒静音定时器，文本:', this.recognizedText.substring(0, 50), 'RAG生成中:', this.isGeneratingResponse);
+                    } else {
+                        console.log('⏭️ [忽略] 当前会话已发送，不再启动静音定时器，避免重复发送');
+                    }
                     
                     console.log('💡 [提示] 识别结果已更新，当前完整文本长度:', this.recognizedText.length);
                     console.log('📊 [DEBUG] 累积的final结果数量:', this.finalResults.length);
@@ -745,10 +762,28 @@ class MuseumChatApp {
                             ? this.recognizedText.trim() 
                             : (this.finalResults.length > 0 ? this.finalResults.join(' ') : '');
                         
-                        if (finalText) {
+                        if (finalText && !this.hasSentCurrentRecognition) {
                             console.log('📤 [DEBUG] 识别已结束，发送最终完整识别结果:', finalText);
                             console.log('📊 [DEBUG] finalResults数量:', this.finalResults.length, 'recognizedText长度:', this.recognizedText.length);
+                            
+                            // 标记当前识别会话已发送，防止重复发送
+                            this.hasSentCurrentRecognition = true;
+                            
+                            // 清除静音检测定时器，防止重复触发
+                            if (this.silenceTimeout) {
+                                clearTimeout(this.silenceTimeout);
+                                this.silenceTimeout = null;
+                            }
+                            
                             this.sendRecognizedText();
+                            
+                            // 关键修复：发送后立即清空识别结果，防止下次意外重复发送
+                            this.recognizedText = '';
+                            this.finalResults = [];
+                            this.elements.messageInput.value = '';
+                            this.updateCharCount();
+                        } else if (this.hasSentCurrentRecognition) {
+                            console.log('⏭️ [忽略] 当前识别会话已发送，忽略status分支的重复发送');
                         } else {
                             console.log('⚠️ [提示] 识别已结束，但没有识别结果');
                             this.waitingForFinalResult = false;
@@ -927,11 +962,16 @@ class MuseumChatApp {
 
             // 清空之前的识别结果，开始新的录音会话（仅在首次启动时）
             // 在常开模式下，不清空识别结果，保持持续识别
+            // 修正：每次启动麦克风时都清空之前的识别结果，防止残留
             if (!this.isMicrophoneActive) {
+                console.log('🧹 [DEBUG] 启动麦克风，清空旧识别结果');
                 this.recognizedText = '';
                 this.finalResults = []; // 清空累积的final结果
                 this.elements.messageInput.value = '';
                 this.updateCharCount();
+                // 重置识别会话发送标志，开始新的识别会话
+                this.hasSentCurrentRecognition = false;
+                console.log('🔓 [新会话] 重置识别会话发送标志，允许发送新的识别结果');
             }
             this.waitingForFinalResult = false; // 重置等待标志
             
@@ -965,8 +1005,31 @@ class MuseumChatApp {
             return;
         }
         
+        // 检查是否已经发送过
+        if (this.hasSentCurrentRecognition) {
+            console.log('⏭️ [忽略] 当前识别会话已发送，避免重复发送');
+            return;
+        }
+        
+        // 标记当前识别会话已发送
+        this.hasSentCurrentRecognition = true;
+        console.log('🔒 [防重复] 标记当前识别会话已发送');
+        
+        // 清除静音检测定时器，防止重复触发
+        if (this.silenceTimeout) {
+            clearTimeout(this.silenceTimeout);
+            this.silenceTimeout = null;
+            console.log('🧹 [清理] 清除静音检测定时器');
+        }
+        
         // 使用新的发送方法
         this.sendRecognizedTextToRAG(finalText);
+        
+        // 关键修复：发送后立即清空识别状态，防止重复发送
+        this.recognizedText = '';
+        this.finalResults = [];
+        this.elements.messageInput.value = '';
+        this.updateCharCount();
         
         // 重置等待标志
         this.waitingForFinalResult = false;
@@ -1054,6 +1117,9 @@ class MuseumChatApp {
             this.updateCharCount();
         }
         
+        // 重置识别会话发送标志
+        this.hasSentCurrentRecognition = false;
+        
         console.log('✅ [停止] 持续语音识别已完全停止');
     }
     
@@ -1073,6 +1139,10 @@ class MuseumChatApp {
         
         // 清空识别文本
         this.recognizedText = '';
+        
+        // 重置识别会话发送标志，准备新的识别会话
+        this.hasSentCurrentRecognition = false;
+        console.log('🔓 [新会话] 重置识别会话发送标志，准备新识别');
     }
     
     cleanupAudioResources() {
@@ -1199,6 +1269,13 @@ class MuseumChatApp {
         console.log('📊 [静音检测] 当前recognizedText:', this.recognizedText);
         console.log('📊 [静音检测] 当前finalResults:', this.finalResults);
         console.log('📊 [静音检测] RAG生成中:', this.isGeneratingResponse);
+        console.log('📊 [静音检测] 已发送:', this.hasSentCurrentRecognition);
+        
+        // 检查是否已经发送过
+        if (this.hasSentCurrentRecognition) {
+            console.log('⏭️ [忽略] 当前识别会话已发送，忽略静音检测触发');
+            return;
+        }
         
         const finalText = this.recognizedText && this.recognizedText.trim() 
             ? this.recognizedText.trim() 
@@ -1210,6 +1287,10 @@ class MuseumChatApp {
         }
         
         console.log('🔇 [静音检测] 2秒静音，自动发送识别内容:', finalText);
+        
+        // 标记当前识别会话已发送
+        this.hasSentCurrentRecognition = true;
+        console.log('🔒 [防重复] 标记当前识别会话已发送');
         
         // 清除定时器，避免重复触发
         if (this.silenceTimeout) {
@@ -1295,6 +1376,13 @@ class MuseumChatApp {
             requestId: requestId // 传递请求ID
         });
         
+        // 彻底清除静音检测定时器，防止重复触发
+        if (this.silenceTimeout) {
+            clearTimeout(this.silenceTimeout);
+            this.silenceTimeout = null;
+            console.log('🧹 [清理] 发送后彻底清除静音检测定时器');
+        }
+        
         // 清空输入框
         this.elements.messageInput.value = '';
         this.updateCharCount();
@@ -1305,6 +1393,13 @@ class MuseumChatApp {
         // 清空识别结果，准备下次识别（但保持录音继续）
         this.recognizedText = '';
         this.finalResults = [];
+        
+        // 延迟重置识别会话发送标志，防止后端残留消息导致状态混乱
+        // 延长到3秒，确保所有残留的静音检测定时器都已过期，防止重复发送
+        setTimeout(() => {
+            this.hasSentCurrentRecognition = false;
+            console.log('🔓 [新会话] 延迟重置识别会话发送标志，准备接收新识别');
+        }, 3000);
     }
     
     // 启动持续语音识别（常开模式）

@@ -49,7 +49,7 @@ class IicRealtimeSTT(STTModel):
     - 默认模型: iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online
     - 假定音频为: 16kHz, 16bit PCM, 单声道 (paInt16)
     """
-
+    
     def __init__(
         self,
         model_id: str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
@@ -132,7 +132,7 @@ class IicRealtimeSTT(STTModel):
         except Exception as e:
             logging.error("IicRealtimeSTT.transcribe failed: %s", e, exc_info=True)
             return ""
-
+    
     # ========== 流式识别接口 ==========
     def start_streaming(self, result_callback: Optional[Callable[[str, bool], None]] = None):
         """
@@ -147,7 +147,7 @@ class IicRealtimeSTT(STTModel):
         self._audio_buffer = np.array([], dtype=np.float32)
         self._result_callback = result_callback
         self._last_text = ""
-
+    
     def send_audio_frame(self, audio_frame: bytes) -> bool:
         """
         发送一帧音频数据用于流式识别。
@@ -227,7 +227,7 @@ class IicRealtimeSTT(STTModel):
             # 通常 VAD 触发时 buffer 应该是空的或者只有静音。为了安全起见，可以不清空 buffer，
             # 但 cache 必须清空以重置解码器上下文。
             logging.info("IicRealtimeSTT: State reset for new sentence.")
-
+    
     def stop_streaming(self) -> str:
         """停止流式识别，处理剩余缓冲区并返回最终文本。"""
         logging.info("IicRealtimeSTT.streaming: stop_streaming called.")
@@ -262,7 +262,7 @@ class IicRealtimeSTT(STTModel):
             self._cache = None
             self._audio_buffer = None
             self._result_callback = None
-
+    
     def transcribe_streaming(self, audio_chunk: bytes, callback=None) -> str:
         """
         兼容性方法：对单个 chunk 做一次性识别。
@@ -882,17 +882,17 @@ class VoiceInterface:
         if not hasattr(self.stt, "start_streaming"):
             print("⚠️ 当前STT未实现流式接口")
             return ""
-
+        
         result_texts = []
-
+        
         def result_callback(text: str, is_final: bool):
             if text:
                 result_texts.append(text)
                 if callback:
                     callback(text, is_final)
-
+        
         self.stt.start_streaming(result_callback)
-
+        
         # 开始录音
         print(f"🎤 开始实时语音识别 ({duration or self.record_seconds}秒)...")
         stream = self.audio.open(
@@ -902,7 +902,7 @@ class VoiceInterface:
             input=True,
             frames_per_buffer=self.chunk
         )
-
+        
         try:
             frames_to_record = int(self.rate / self.chunk * (duration or self.record_seconds))
             for _ in range(frames_to_record):
@@ -920,7 +920,7 @@ class VoiceInterface:
                 logging.error("停止流式识别时出错", exc_info=True)
 
             print("✅ 实时语音识别完成")
-
+        
         return " ".join(result_texts).strip()
     
     def text_to_voice_streaming(self, text: str) -> dict:
